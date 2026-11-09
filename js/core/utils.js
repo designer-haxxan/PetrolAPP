@@ -6,9 +6,6 @@ export const uuid = () =>
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
   }));
 
-export const round2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
-export const round3 = (n) => Math.round((Number(n) + Number.EPSILON) * 1000) / 1000;
-
 export function num(v, def = 0) {
   if (v === null || v === undefined || v === '') return def;
   const n = typeof v === 'number' ? v : parseFloat(String(v).replace(/,/g, ''));
@@ -21,27 +18,39 @@ export function localDate(d = new Date()) {
 }
 export const today = () => localDate();
 export const nowISO = () => new Date().toISOString();
-export function monthStart(dateStr = today()) { return dateStr.slice(0, 8) + '01'; }
+export const monthKey = (dateStr = today()) => dateStr.slice(0, 7);
+export const monthStart = (dateStr = today()) => dateStr.slice(0, 8) + '01';
+export function monthEnd(dateStr = today()) {
+  const [y, m] = dateStr.slice(0, 7).split('-').map(Number);
+  return localDate(new Date(y, m, 0));
+}
+export function addDays(dateStr, days) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + days);
+  return localDate(d);
+}
+// Whole days from a to b (b - a), both YYYY-MM-DD.
+export function daysBetween(a, b) {
+  return Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 86400000);
+}
 export function fmtDate(dateStr) {
   if (!dateStr) return '';
-  const d = new Date(dateStr.length === 10 ? dateStr + 'T00:00:00' : dateStr);
-  return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+  const d = new Date(String(dateStr).length === 10 ? dateStr + 'T00:00:00' : dateStr);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 export function fmtDateTime(iso) {
   if (!iso) return '';
-  return new Date(iso).toLocaleString(undefined, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 export function fmtTime(iso) {
-  return iso ? new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
+  return iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
 }
-
-const moneyFmt = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const qtyFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 3 });
-export const fmtNum = (n) => moneyFmt.format(round2(n || 0));
-export const fmtQty = (n) => qtyFmt.format(round3(n || 0));
 
 const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c]);
+
+export const lc = (s) => String(s ?? '').trim().toLowerCase();
+export const clean = (s, max = 200) => String(s ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
 
 export function debounce(fn, ms = 200) {
   let t;
@@ -62,44 +71,6 @@ export function toCSV(rows) {
     const s = String(v ?? '');
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   }).join(',')).join('\r\n');
-}
-
-const loadedScripts = new Map();
-export function loadScript(src, timeoutMs = 15000) {
-  if (loadedScripts.has(src)) return loadedScripts.get(src);
-  const p = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    const timer = setTimeout(() => { s.remove(); reject(new Error('Timed out loading ' + src)); }, timeoutMs);
-    s.src = src; s.async = true; s.crossOrigin = 'anonymous';
-    s.onload = () => { clearTimeout(timer); resolve(); };
-    s.onerror = () => { clearTimeout(timer); s.remove(); reject(new Error('Failed to load ' + src)); };
-    document.head.appendChild(s);
-  });
-  loadedScripts.set(src, p);
-  p.catch(() => loadedScripts.delete(src));
-  return p;
-}
-
-export const lc = (s) => String(s ?? '').trim().toLowerCase();
-export const clean = (s, max = 200) => String(s ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
-
-// Resize & compress an image file to a small JPEG data URL (for product images).
-export function compressImage(file, maxSize = 320, quality = 0.72) {
-  return new Promise((resolve, reject) => {
-    if (!file.type.startsWith('image/')) return reject(new Error('Not an image file'));
-    const img = new Image();
-    const url = URL.createObjectURL(file);
-    img.onload = () => {
-      const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url);
-      resolve(c.toDataURL('image/jpeg', quality));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
-    img.src = url;
-  });
 }
 
 export class AppError extends Error {

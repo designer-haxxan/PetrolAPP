@@ -1,14 +1,14 @@
 {
-  "name": "SaleAPP POS",
-  "short_name": "SaleAPP",
-  "description": "Offline-first point of sale with sales, purchases, stock, accounts and reports.",
+  "name": "PetroPump ERP",
+  "short_name": "PetroPump",
+  "description": "Petrol pump ERP for Pakistan: shifts and nozzles, tanks and dips, fuel purchases, udhaar, investors, ledgers and financial statements. Works offline.",
   "id": "./index.html",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0f0c29",
-  "theme_color": "#4f46e5",
+  "background_color": "#0b1426",
+  "theme_color": "#0b5cad",
   "categories": ["business", "finance", "productivity"],
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
@@ -16,7 +16,8 @@
     { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
-    { "name": "New sale", "url": "./index.html#/pos", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Open shift", "url": "./index.html#/shifts", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Counter sale", "url": "./index.html#/sales", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
     { "name": "Dashboard", "url": "./index.html#/dashboard", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
   ]
 }

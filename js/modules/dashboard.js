@@ -1,224 +1,151 @@
-// Dashboard: business hub + today's figures and trends, all computed from transaction records.
-import * as idb from '../db/idb.js';
+// Dashboard: today's sales, cash position, receivables and payables, tank gauges, 7-day chart and alerts.
+import { getAll } from '../db/idb.js';
 import * as UI from '../core/ui.js';
-import { esc, fmtNum, fmtQty, fmtTime, fmtDate, today, localDate, round2, debounce } from '../core/utils.js';
-import { cur } from '../core/views.js';
-import { pref } from '../core/settings.js';
+import { esc, today, monthStart, addDays, fmtDate, fmtTime } from '../core/utils.js';
+import { fmt, money, fmtQty, rnd } from '../core/money.js';
+import { loadBooks, incomeStatement, aging } from '../services/finance.js';
+import { tankGauge, REF_LABELS } from '../core/views.js';
 import * as Auth from '../services/auth.js';
-import * as Catalog from '../services/catalog.js';
-import * as Posting from '../services/posting.js';
-import * as Backup from '../services/backup.js';
 
-const $ = window.jQuery;
+const MONEY_KINDS = ['cash', 'bank', 'wallet'];
 
-export async function todayFigures(date = today()) {
-  const r = IDBKeyRange.only(date);
-  const [sales, purchases, sret, pret, vouchers, entries, accounts] = await idb.read(['sales', 'purchases', 'saleReturns', 'purchaseReturns', 'vouchers', 'entries', 'accounts'], (t) => Promise.all([
-    t.getAllByIndex('sales', 'date', r), t.getAllByIndex('purchases', 'date', r), t.getAllByIndex('saleReturns', 'date', r),
-    t.getAllByIndex('purchaseReturns', 'date', r), t.getAllByIndex('vouchers', 'date', r), t.getAllByIndex('entries', 'date', r), t.getAll('accounts'),
-  ]));
-  const live = (x) => x.filter((d) => d.status !== 'void');
-  const cashIds = new Set(accounts.filter((a) => ['cash', 'bank'].includes(a.type)).map((a) => a.id));
-  const cashEntries = entries.filter((e) => cashIds.has(e.accountId) && e.refType !== 'opening' && e.refType !== 'transfer');
-  const s = live(sales); const p = live(purchases);
-  return {
-    sales: round2(s.reduce((a, d) => a + d.total, 0)), salesCount: s.length,
-    purchases: round2(p.reduce((a, d) => a + d.total, 0)), purchasesCount: p.length,
-    saleReturns: round2(live(sret).reduce((a, d) => a + d.total, 0)),
-    purchaseReturns: round2(live(pret).reduce((a, d) => a + d.total, 0)),
-    cashIn: round2(cashEntries.reduce((a, e) => a + e.debit, 0)),
-    cashOut: round2(cashEntries.reduce((a, e) => a + e.credit, 0)),
-    txCount: s.length + p.length + live(sret).length + live(pret).length + live(vouchers).length,
-    recent: s.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 6),
-    cashIds,
-  };
-}
-
-// Sales per day for the last 7 days + top products by amount (from sale lines).
-async function weekFigures() {
-  const days = [];
-  for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(localDate(d)); }
-  const range = IDBKeyRange.bound(days[0], days[6]);
-  const [sales, items] = await idb.read(['sales', 'saleItems'], (t) => Promise.all([t.getAllByIndex('sales', 'date', range), t.getAllByIndex('saleItems', 'date', range)]));
-  const byDay = Object.fromEntries(days.map((d) => [d, { date: d, total: 0, count: 0 }]));
-  for (const s of sales) if (s.status !== 'void' && byDay[s.date]) { byDay[s.date].total += s.total; byDay[s.date].count++; }
-  const prod = new Map();
-  for (const i of items) { const x = prod.get(i.productId) || { name: i.name, amount: 0, qty: 0 }; x.amount += i.amount; x.qty += i.qty; prod.set(i.productId, x); }
-  return { days: days.map((d) => ({ ...byDay[d], total: round2(byDay[d].total) })), top: [...prod.values()].sort((a, b) => b.amount - a.amount).slice(0, 5) };
-}
-
-const compact = (n) => (Math.abs(n) >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : Math.abs(n) >= 1e3 ? `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : String(Math.round(n)));
-function niceMax(v) {
-  if (v <= 0) return 1;
-  const p = 10 ** Math.floor(Math.log10(v));
-  const m = v / p;
-  return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p;
-}
-
-// Single-series bar chart drawn at the container's real width (so text stays crisp). Hover/tap shows a tooltip.
-function drawWeekChart(box, days) {
-  const W = Math.max(280, box.clientWidth); const H = 190;
-  const m = { t: 22, r: 8, b: 26, l: 40 };
-  const iw = W - m.l - m.r; const ih = H - m.t - m.b;
-  const max = niceMax(Math.max(...days.map((d) => d.total)));
-  const band = iw / days.length; const bw = Math.min(36, band * 0.56);
-  const y = (v) => m.t + ih - (v / max) * ih;
-  const peak = days.reduce((a, d, i) => (d.total > days[a].total ? i : a), 0);
-  const ticks = [0, max / 2, max];
-  const barPath = (x, top, w, h) => {
-    if (h <= 0) return '';
-    const r = Math.min(4, h, w / 2);
-    return `M${x},${top + h} V${top + r} Q${x},${top} ${x + r},${top} H${x + w - r} Q${x + w},${top} ${x + w},${top + r} V${top + h} Z`;
-  };
-  let svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Sales for the last 7 days"><g class="grid">`;
-  for (const t of ticks) svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}"/>`;
-  svg += '</g><g class="axis">';
-  for (const t of ticks) svg += `<text x="${m.l - 8}" y="${y(t) + 4}" text-anchor="end">${compact(t)}</text>`;
-  days.forEach((d, i) => {
-    const cx = m.l + band * i + band / 2;
-    const label = i === days.length - 1 ? 'Today' : new Date(d.date + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short' });
-    svg += `<text x="${cx}" y="${H - 6}" text-anchor="middle" ${i === days.length - 1 ? 'font-weight="700"' : ''}>${esc(label)}</text>`;
-  });
-  svg += '</g>';
-  days.forEach((d, i) => {
-    const x = m.l + band * i + (band - bw) / 2; const top = y(d.total); const h = m.t + ih - top;
-    svg += `<path class="bar" d="${barPath(x, top, bw, h)}" style="animation-delay:${i * 0.05}s"/>`;
-    if ((i === peak || i === days.length - 1) && d.total > 0) svg += `<text class="val" x="${x + bw / 2}" y="${top - 6}" text-anchor="middle">${compact(d.total)}</text>`;
-    svg += `<rect class="bar-hit" data-i="${i}" x="${m.l + band * i}" y="${m.t}" width="${band}" height="${ih}"/>`;
-  });
-  svg += '</svg><div class="viz-tip"></div>';
-  box.innerHTML = svg;
-  const tip = box.querySelector('.viz-tip');
-  const show = (el) => {
-    const d = days[+el.dataset.i];
-    tip.innerHTML = `<b>${esc(fmtDate(d.date))}</b><br>${esc(cur())} ${fmtNum(d.total)} · ${d.count} invoice${d.count === 1 ? '' : 's'}`;
-    tip.style.left = `${(+el.getAttribute('x') + band / 2)}px`;
-    tip.style.top = `${Math.max(14, y(d.total))}px`;
-    tip.classList.add('show');
-  };
-  box.querySelectorAll('.bar-hit').forEach((el) => {
-    el.addEventListener('mouseenter', () => show(el));
-    el.addEventListener('click', () => show(el));
-    el.addEventListener('mouseleave', () => tip.classList.remove('show'));
-  });
+function kpi(label, value, icon, tint, sub = '', count = true) {
+  return `<div class="kpi" style="--tint:${tint}">
+    <div class="kpi-icon"><i class="bi bi-${icon}"></i></div>
+    <div class="kpi-label">${esc(label)}</div>
+    <div class="kpi-value" ${count ? `data-count="${Number(value) || 0}" data-money="1"` : ''}>${count ? money(0) : value}</div>
+    ${sub ? `<div class="kpi-sub">${sub}</div>` : ''}
+  </div>`;
 }
 
 export default {
   async render(el) {
-    this.destroy();
-    const $el = $(el);
-    const u = Auth.user();
-    const [f, bal, wk] = await Promise.all([todayFigures(), Posting.allBalances(), weekFigures()]);
-    let rec = 0; let pay = 0; let cash = 0;
-    for (const [id, b] of bal) {
-      if (id.startsWith('C:') && b.balance > 0) rec += b.balance;
-      if (id.startsWith('S:') && b.balance < 0) pay -= b.balance;
-      if (f.cashIds.has(id)) cash += b.balance;
+    const [tanks, shifts, sales, purchases, vouchers, products, books, dips] = await Promise.all([
+      getAll('tanks'), getAll('shifts'), getAll('sales'), getAll('purchases'), getAll('vouchers'), getAll('products'), loadBooks(), getAll('dips'),
+    ]);
+    const t = today();
+    const closedToday = shifts.filter((s) => s.status === 'closed' && s.date === t);
+    const openShift = shifts.find((s) => s.status === 'open');
+    const salesToday = sales.filter((s) => s.status === 'posted' && s.date === t);
+    const litresToday = rnd(closedToday.reduce((s, x) => s + (x.totals?.litres || 0), 0));
+    const grossToday = rnd(closedToday.reduce((s, x) => s + (x.totals?.gross || 0), 0) + salesToday.reduce((s, x) => s + x.gross, 0));
+    const cashAccounts = books.accountList.filter((a) => MONEY_KINDS.includes(a.kind));
+    const balanceOf = (id) => books.entries.reduce((s, e) => (e.accountId === id ? rnd(s + e.debit - e.credit) : s), 0);
+    const cashTotal = rnd(cashAccounts.filter((a) => a.kind === 'cash').reduce((s, a) => s + balanceOf(a.id), 0));
+    const bankTotal = rnd(cashAccounts.filter((a) => a.kind !== 'cash').reduce((s, a) => s + balanceOf(a.id), 0));
+    const ar = aging(books, 'ar', t).grand.total;
+    const ap = aging(books, 'ap', t).grand.total;
+    const stockValue = rnd(products.reduce((s, p) => s + (p.stockValue || 0), 0));
+    const pl = incomeStatement(books, monthStart(t), t);
+    const alerts = [];
+    if (openShift) alerts.push({ icon: 'fuel-pump', tone: 'primary', text: `Shift ${openShift.number} is open since ${fmtTime(openShift.openedAt)}.`, href: '#/shifts' });
+    for (const tk of tanks) {
+      if (tk.bookLitres < -0.00005) alerts.push({ icon: 'exclamation-triangle', tone: 'danger', text: `${tk.name} book stock is negative (${fmtQty(tk.bookLitres)} L). A receipt or dip is missing.`, href: '#/tanks' });
     }
-    const prods = Catalog.allProducts().filter((p) => p.active);
-    const tracked = prods.filter((p) => p.trackStock !== false);
-    const stockValue = tracked.reduce((s, p) => s + Math.max(0, p.stock) * (p.purchasePrice || 0), 0);
-    const low = tracked.filter((p) => p.stock <= (p.minStock || 0)).sort((a, b) => a.stock - b.stock);
-    const customers = Catalog.allParties('customers').filter((c) => c.active).length;
-    const suppliers = Catalog.allParties('suppliers').filter((c) => c.active).length;
-    const lastBackup = pref.get('lastBackupAt');
-    const backupDays = lastBackup ? Math.floor((Date.now() - new Date(lastBackup)) / 86400000) : null;
-    const hour = new Date().getHours();
-    const greet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
-    const M = (n) => `data-count="${round2(n)}" data-money="1"`;
+    const undipped = dips.filter((d) => !d.posted && Math.abs(d.variance) > 0.00005).length;
+    if (undipped) alerts.push({ icon: 'droplet-half', tone: 'warning', text: `${undipped} tank dip variance(s) waiting to be posted.`, href: '#/tanks' });
+    const old = aging(books, 'ar', t).rows.reduce((s, r) => s + r.b3, 0);
+    if (old > 0.00005) alerts.push({ icon: 'hourglass-split', tone: 'warning', text: `${money(old)} of udhaar is over 90 days old.`, href: '#/reports' });
+    // Only items that are on sale (have a rate) and have run out.
+    const lowStock = products.filter((p) => p.category === 'goods' && p.price > 0 && p.stockQty <= 0 && p.active !== false);
+    if (lowStock.length) alerts.push({ icon: 'box-seam', tone: 'warning', text: `${lowStock.length} goods item(s) out of stock.`, href: '#/stock' });
 
-    const tile = (href, icon, tint, title, sub, perm) => (perm && !Auth.can(perm) ? '' : `<div class="col-6 col-md-4 col-xl-3">
-      <a class="hub-tile" href="${href}"><div class="icon-chip tint-${tint}"><i class="bi bi-${icon}"></i></div>
-      <div class="min-w-0"><div class="t">${title}</div><div class="s">${sub}</div></div></a></div>`);
-    const kpi = (icon, tint, label, valueAttr, href) => `<div class="col-6 col-lg-3"><${href ? `a href="${href}"` : 'div'} class="stat-card card-body d-block text-decoration-none p-3 h-100">
-      <div class="kpi"><div class="icon-chip tint-${tint}"><i class="bi bi-${icon}"></i></div><div class="min-w-0"><div class="l">${label}</div><div class="v money" ${valueAttr}>0</div></div></div></${href ? 'a' : 'div'}></div>`;
+    // 7-day chart (gross sales per day from closed shifts and counter sales)
+    const days = Array.from({ length: 7 }, (_, i) => addDays(t, i - 6));
+    const perDay = days.map((d) => rnd(
+      shifts.filter((s) => s.status === 'closed' && s.date === d).reduce((s, x) => s + (x.totals?.gross || 0), 0)
+      + sales.filter((s) => s.status === 'posted' && s.date === d).reduce((s, x) => s + x.gross, 0)));
+    const maxDay = Math.max(1, ...perDay);
+    const chart = days.map((d, i) => `<div class="col" title="${esc(fmtDate(d))}: ${esc(money(perDay[i]))}">
+        <div class="val">${perDay[i] ? fmt(perDay[i], 0) : ''}</div>
+        <div class="fill" style="--i:${i};height:${Math.max(3, (perDay[i] / maxDay) * 100)}%"></div>
+        <div class="lbl">${esc(new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' }))}</div></div>`).join('');
 
-    $el.html(`
-      <div class="hero-card">
-        <div class="d-flex justify-content-between align-items-start gap-2 mb-3">
-          <div><div class="hello">${greet}, ${esc(u.name.split(' ')[0])}</div><div class="date">${new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</div></div>
-          <span class="pill"><i class="bi bi-${navigator.onLine ? 'cloud-check' : 'wifi-off'}"></i>${navigator.onLine ? 'Online' : 'Offline'}</span>
+    // Recent activity across modules
+    const activity = [
+      ...shifts.filter((s) => s.status === 'closed').map((s) => ({ at: s.closedAt, label: `Shift ${s.number} closed`, sub: `${fmtQty(s.totals?.litres || 0)} L · ${money(s.totals?.gross || 0)}`, icon: 'fuel-pump', href: '#/shifts' })),
+      ...sales.map((s) => ({ at: s.createdAt, label: `Sale ${s.number}`, sub: `${esc(s.customerName)} · ${money(s.gross)}`, icon: 'receipt', href: '#/sales', status: s.status })),
+      ...purchases.map((p) => ({ at: p.createdAt, label: `Purchase ${p.number}`, sub: `${esc(p.supplierName)} · ${money(p.total)}`, icon: 'truck', href: '#/purchases', status: p.status })),
+      ...vouchers.map((v) => ({ at: v.createdAt, label: `${esc(v.label || 'Voucher')} ${v.number}`, sub: `${esc(v.partyName || '')} ${money(v.amount)}`, icon: 'cash-coin', href: '#/vouchers', status: v.status })),
+    ].sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 8);
+
+    const tankCards = tanks.filter((tk) => tk.active !== false).map((tk) => {
+      const p = products.find((x) => x.id === tk.productId);
+      const pct = tk.capacity > 0 ? (tk.bookLitres / tk.capacity) * 100 : 0;
+      return `<div class="col-6 col-md-4 col-xl-3">${tankGauge(pct, { label: tk.name, sub: `${fmtQty(tk.bookLitres)} / ${fmtQty(tk.capacity)} L · ${p?.name || ''}` })}</div>`;
+    }).join('');
+
+    const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
+    el.innerHTML = `
+      <div class="d-flex flex-wrap align-items-end justify-content-between gap-2 mb-3">
+        <div><div class="text-body-secondary small">${esc(greeting)}, ${esc(Auth.user()?.name || '')}</div>
+          <h1 class="h4 fw-bold mb-0">${esc(fmtDate(t))}</h1></div>
+        <div class="d-flex gap-2 no-print">
+          ${openShift ? `<a href="#/shifts" class="btn btn-success btn-sm"><span class="live-dot"></span>Shift ${esc(openShift.number)} live</a>` : (Auth.can('shift') ? '<a href="#/shifts" class="btn btn-primary btn-sm"><i class="bi bi-play-fill me-1"></i>Open shift</a>' : '')}
+          ${Auth.can('sale') ? '<a href="#/sales" class="btn btn-outline-primary btn-sm"><i class="bi bi-cart-plus me-1"></i>Counter sale</a>' : ''}
         </div>
-        <div class="lbl">Today's sales</div>
-        <div class="big money" ${M(f.sales)}>0</div>
-        <div class="d-flex flex-wrap gap-2 mt-2 mb-3">
-          <span class="pill"><i class="bi bi-receipt"></i>${f.salesCount} invoice${f.salesCount === 1 ? '' : 's'}</span>
-          <span class="pill"><i class="bi bi-arrow-down-circle"></i>In ${esc(cur())} ${fmtNum(f.cashIn)}</span>
-          <span class="pill"><i class="bi bi-arrow-up-circle"></i>Out ${esc(cur())} ${fmtNum(f.cashOut)}</span>
+      </div>
+
+      <div class="row g-3 stagger">
+        <div class="col-lg-5">
+          <div class="hero-card h-100">
+            <div class="small opacity-75">Today's sales (fuel + goods)</div>
+            <div class="kpi-value mt-1" data-count="${grossToday}" data-money="1">${money(0)}</div>
+            <div class="d-flex gap-4 mt-3 flex-wrap">
+              <div><div class="small opacity-75">Litres sold</div><div class="fw-bold fs-5">${fmtQty(litresToday)} L</div></div>
+              <div><div class="small opacity-75">Bills</div><div class="fw-bold fs-5">${salesToday.length + closedToday.length}</div></div>
+              <div><div class="small opacity-75">Profit this month</div><div class="fw-bold fs-5">${money(pl.netProfit)}</div></div>
+            </div>
+          </div>
         </div>
-        <div class="d-flex flex-wrap gap-2">
-          ${Auth.can('sale.create') ? '<a class="btn hero-cta" href="#/pos"><i class="bi bi-cart-plus me-1"></i>New sale</a>' : ''}
-          ${Auth.can('purchase.manage') ? '<a class="btn btn-outline-light" href="#/purchase/new"><i class="bi bi-bag-plus me-1"></i>Purchase</a>' : ''}
-          ${Auth.can('voucher.create') ? '<a class="btn btn-outline-light d-none d-sm-inline-block" href="#/vouchers"><i class="bi bi-cash-coin me-1"></i>Cash book</a>' : ''}
+        <div class="col-lg-7">
+          <div class="row g-3">
+            <div class="col-6 col-xl-3">${kpi('Cash in hand', cashTotal, 'cash-stack', '#16a34a')}</div>
+            <div class="col-6 col-xl-3">${kpi('Bank & wallets', bankTotal, 'bank', '#0b5cad')}</div>
+            <div class="col-6 col-xl-3">${kpi('Receivable (udhaar)', ar, 'people', '#f97316')}</div>
+            <div class="col-6 col-xl-3">${kpi('Payable (OMCs)', ap, 'building', '#dc2626')}</div>
+            <div class="col-6 col-xl-3">${kpi('Stock value', stockValue, 'boxes', '#7c3aed')}</div>
+            <div class="col-6 col-xl-3">${kpi('Fixed assets (cost)', books.entries.reduce((s, e) => (e.accountId.startsWith('fa_') ? rnd(s + e.debit - e.credit) : s), 0), 'bricks', '#0891b2')}</div>
+          </div>
         </div>
       </div>
-      ${!navigator.onLine ? '<div class="alert alert-secondary py-2 small"><i class="bi bi-wifi-off me-1"></i>You are offline. Everything you do is saved on this device.</div>' : ''}
-      <div class="legacy-hint"></div>
-      ${Auth.can('backup.export') && (backupDays === null || backupDays >= 7) ? `<div class="alert alert-warning py-2 small d-flex align-items-center gap-2"><i class="bi bi-shield-exclamation"></i><div class="flex-grow-1">${backupDays === null ? 'No backup has been made on this device yet.' : `Last backup was ${backupDays} days ago.`} Your data only lives on this device.</div><a class="btn btn-sm btn-warning" href="#/backup">Back up</a></div>` : ''}
 
-      <div class="section-title"><h2>Business hub</h2></div>
-      <div class="row g-2 stagger">
-        ${tile('#/sales', 'receipt', 'indigo', 'Sales', `${f.salesCount} today · ${esc(cur())} ${fmtNum(f.sales)}`)}
-        ${tile('#/purchases', 'bag-check', 'violet', 'Purchases', `${f.purchasesCount} today · ${esc(cur())} ${fmtNum(f.purchases)}`, 'purchase.manage')}
-        ${tile('#/products', 'box-seam', 'cyan', 'Products', `${prods.length} active items`)}
-        ${tile('#/stock', 'boxes', low.length ? 'red' : 'green', 'Inventory', low.length ? `${low.length} low / out of stock` : 'All stock levels fine')}
-        ${tile('#/customers', 'people', 'pink', 'Customers', `${customers} · due ${esc(cur())} ${fmtNum(rec)}`)}
-        ${tile('#/suppliers', 'truck', 'slate', 'Suppliers', `${suppliers} · payable ${esc(cur())} ${fmtNum(pay)}`, 'purchase.manage')}
-        ${tile('#/accounts', 'bank', 'green', 'Accounts', `Cash & bank ${esc(cur())} ${fmtNum(cash)}`, 'account.manage')}
-        ${tile('#/vouchers', 'cash-coin', 'amber', 'Cash book', 'Receipts & payments', 'voucher.create')}
-        ${tile('#/returns', 'arrow-return-left', 'red', 'Returns', f.saleReturns ? `${esc(cur())} ${fmtNum(f.saleReturns)} today` : 'Sale & purchase returns')}
-        ${tile('#/reports', 'bar-chart-line', 'indigo', 'Reports', 'Sales, stock, profit & ledgers', 'reports.view')}
-        ${tile('#/backup', 'cloud-arrow-down', 'cyan', 'Backup', backupDays === null ? 'Not backed up yet' : `Last ${backupDays}d ago`, 'backup.export')}
-        ${tile('#/settings', 'gear', 'slate', 'Settings', 'Shop, printer, tax')}
+      <div class="row g-3 mt-1 stagger">
+        <div class="col-lg-7">
+          <div class="card p-3 h-100">
+            <div class="d-flex justify-content-between align-items-center mb-2"><div class="fw-semibold">Last 7 days — sales</div><div class="small text-body-secondary">${money(perDay.reduce((s, x) => s + x, 0))}</div></div>
+            <div class="chart-bars">${chart}</div>
+          </div>
+        </div>
+        <div class="col-lg-5">
+          <div class="card p-3 h-100">
+            <div class="fw-semibold mb-2">Alerts</div>
+            ${alerts.length ? alerts.map((a) => `<a href="${a.href}" class="d-flex gap-2 align-items-start text-decoration-none text-body py-2 border-bottom">
+              <span class="text-${a.tone}"><i class="bi bi-${a.icon}"></i></span><span class="small">${esc(a.text)}</span></a>`).join('') : '<div class="small text-body-secondary py-3"><i class="bi bi-check2-circle text-success me-1"></i>Nothing needs attention right now.</div>'}
+          </div>
+        </div>
       </div>
 
-      <div class="section-title"><h2>Overview</h2></div>
-      <div class="row g-2 stagger">
-        ${kpi('person-down', 'amber', 'Receivables', M(rec), Auth.can('reports.view') ? '#/reports/receivables' : '#/customers')}
-        ${Auth.can('purchase.manage') ? kpi('truck', 'red', 'Payables', M(pay), Auth.can('reports.view') ? '#/reports/payables' : null) : ''}
-        ${kpi('boxes', 'indigo', 'Stock value', M(stockValue), '#/stock')}
-        ${kpi('activity', 'cyan', 'Transactions today', `data-count="${f.txCount}"`, null)}
-      </div>
-
-      <div class="row g-3 mt-1">
-        <div class="col-lg-8"><div class="card viz-card h-100">
-          <div class="viz-head"><div><div class="ttl">Sales — last 7 days</div><div class="sub">Total ${esc(cur())} ${fmtNum(wk.days.reduce((s, d) => s + d.total, 0))} · ${wk.days.reduce((s, d) => s + d.count, 0)} invoices</div></div>
-            <a class="small fw-semibold text-decoration-none" href="#/reports/sales">Report <i class="bi bi-chevron-right"></i></a></div>
-          <div class="viz week-chart"></div>
-          <details class="viz-table"><summary>Show as table</summary>
-            <table class="table table-sm table-report mt-2 mb-0"><thead><tr><th>Date</th><th class="num">Invoices</th><th class="num">Sales</th></tr></thead>
-            <tbody>${wk.days.map((d) => `<tr><td>${esc(fmtDate(d.date))}</td><td class="num">${d.count}</td><td class="num">${fmtNum(d.total)}</td></tr>`).join('')}</tbody></table></details>
-        </div></div>
-        <div class="col-lg-4"><div class="card viz-card h-100">
-          <div class="viz-head"><div><div class="ttl">Top products</div><div class="sub">By sales amount, last 7 days</div></div></div>
-          ${wk.top.length ? wk.top.map((p) => `<div class="hbar"><div class="name">${esc(p.name)}</div><div class="amt money">${fmtNum(p.amount)}</div>
-            <div class="track"><div class="fill" style="width:${Math.max(3, (p.amount / wk.top[0].amount) * 100)}%"></div></div></div>`).join('') : UI.emptyState('No sales in the last 7 days', 'graph-up')}
-        </div></div>
-      </div>
-
-      <div class="row g-3 mt-1">
-        <div class="col-md-6"><div class="section-title mt-0"><h2>Recent sales</h2><a href="#/sales">View all</a></div>
-          <div class="list-card">${f.recent.map((s) => `<a class="list-row" href="#/sales/${encodeURIComponent(s.id)}">${UI.avatar(s.customerName, 'round')}<div class="main"><div class="title">${esc(s.customerName)}</div><div class="sub">${esc(s.number)} · ${fmtTime(s.createdAt)}</div></div><div class="end"><div class="fw-bold money">${fmtNum(s.total)}</div>${s.balance > 0.004 ? '<span class="badge text-bg-warning">Credit</span>' : '<span class="badge bg-success-subtle text-success-emphasis">Paid</span>'}</div></a>`).join('') || UI.emptyState('No sales yet today', 'receipt')}</div></div>
-        <div class="col-md-6"><div class="section-title mt-0"><h2>Low stock</h2><a href="#/stock">Inventory</a></div>
-          <div class="list-card">${low.slice(0, 6).map((p) => `<a class="list-row" href="#/stock/${encodeURIComponent(p.id)}">${UI.avatar(p.name)}<div class="main"><div class="title">${esc(p.name)}</div><div class="sub">Minimum ${fmtQty(p.minStock || 0)} ${esc(p.unit || '')}</div></div><div class="end"><span class="badge ${p.stock <= 0 ? 'text-bg-danger' : 'text-bg-warning'}"><i class="bi bi-${p.stock <= 0 ? 'x-octagon' : 'exclamation-triangle'} me-1"></i>${fmtQty(p.stock)} ${esc(p.unit || '')}</span></div></a>`).join('') || UI.emptyState('All stock levels are fine', 'check2-circle')}</div></div>
-      </div>`);
-
-    UI.countUp(el, (v, node) => (node.dataset.money ? `${cur()} ${fmtNum(v)}` : String(Math.round(v))));
-    const chartBox = el.querySelector('.week-chart');
-    drawWeekChart(chartBox, wk.days);
-    this._resize = debounce(() => { if (chartBox.isConnected) drawWeekChart(chartBox, wk.days); }, 200);
-    window.addEventListener('resize', this._resize);
-
-    if (Auth.can('backup.restore') && pref.get('legacyHandled') !== true) {
-      Backup.legacyDataExists().then((yes) => yes && $el.find('.legacy-hint').html('<div class="alert alert-info py-2 small d-flex align-items-center gap-2"><i class="bi bi-database"></i><div class="flex-grow-1">Data from an older version was found on this device.</div><a class="btn btn-sm btn-info" href="#/backup">Review</a></div>'));
-    }
-    const refresh = () => { if (location.hash === '' || location.hash.startsWith('#/dashboard')) this.render(el); };
-    this._h = refresh;
-    document.addEventListener('data:changed', refresh);
+      <div class="row g-3 mt-1 stagger">
+        <div class="col-lg-7">
+          <div class="card p-3 h-100">
+            <div class="fw-semibold mb-2">Tanks (book stock)</div>
+            ${tankCards ? `<div class="row g-2 justify-content-center">${tankCards}</div>` : UI.emptyState('No tanks yet. Add tanks in Tanks & Dip Readings.', 'droplet-half')}
+          </div>
+        </div>
+        <div class="col-lg-5">
+          <div class="list-card h-100">
+            <div class="p-3 pb-2 fw-semibold">Recent activity</div>
+            ${activity.length ? activity.map((a) => `<a class="list-row text-decoration-none" href="${a.href}">
+              <span class="avatar tint-slate"><i class="bi bi-${a.icon}"></i></span>
+              <span class="flex-grow-1 min-w-0"><span class="d-block fw-medium text-truncate">${esc(a.label)} ${a.status === 'void' ? '<span class="badge text-bg-secondary ms-1">Void</span>' : ''}</span><span class="d-block small text-body-secondary text-truncate">${a.sub}</span></span>
+              <span class="small text-body-secondary text-nowrap">${esc(fmtTime(a.at))}</span></a>`).join('') : UI.emptyState('No activity yet', 'clock-history')}
+          </div>
+        </div>
+      </div>`;
+    UI.countUp(el, (v) => money(v));
   },
-  destroy() {
-    if (this._h) document.removeEventListener('data:changed', this._h);
-    if (this._resize) window.removeEventListener('resize', this._resize);
-    this._h = null; this._resize = null;
-  },
+  destroy() {},
 };
+
+export { REF_LABELS };

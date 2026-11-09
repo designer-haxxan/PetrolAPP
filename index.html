@@ -3,13 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="description" content="Offline-first point of sale with sales, purchases, stock, accounts and reports.">
-  <meta name="theme-color" content="#4f46e5">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net; img-src 'self' data: blob:; media-src 'self' blob: mediastream:; connect-src 'self' https://eposwala.com https://cdn.jsdelivr.net; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'">
+  <meta name="description" content="Petrol pump ERP: nozzle-wise shifts, tanks and dips, fuel purchases, udhaar, vouchers, investors, receivables, payables and full accounts for Pakistani petrol pumps.">
+  <meta name="theme-color" content="#0b5cad">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net data:; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="SaleAPP POS">
+  <meta name="apple-mobile-web-app-title" content="PetroPump ERP">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
@@ -17,76 +17,92 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource-variable/inter@5.1.0/index.css">
   <link rel="stylesheet" href="css/app.css">
-  <title>SaleAPP POS</title>
+  <title>PetroPump ERP</title>
 </head>
 <body>
-  <!-- Splash / loading screen -->
+  <!-- Splash -->
   <div id="splash">
-    <div class="splash-logo"><img src="icons/icon-192.png" alt=""></div>
-    <div class="splash-name mt-3">SaleAPP POS</div>
+    <div class="splash-logo"><i class="bi bi-fuel-pump-fill"></i></div>
+    <div class="splash-name mt-3">PetroPump ERP</div>
     <div class="splash-bar" role="status"><span class="visually-hidden">Loading</span></div>
     <div id="splash-error" class="text-danger small mt-3 px-4 text-center"></div>
   </div>
 
-  <!-- Login -->
+  <!-- First run: create the owner account -->
+  <div id="view-setup" class="d-none">
+    <div class="auth">
+      <div class="auth-bg" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
+      <div class="auth-inner">
+        <section class="auth-hero">
+          <div class="brand-row">
+            <div class="brand-mark"><i class="bi bi-fuel-pump-fill"></i></div>
+            <div><div class="name">PetroPump ERP</div><div class="tag">Pakistan petrol pump software</div></div>
+          </div>
+          <h1>Set up your <span class="grad">pump office.</span></h1>
+          <p class="lead-sm">Create the owner account. You can add managers, accountants and attendants later. Everything works offline and is stored on this device.</p>
+          <ul class="feature-chips">
+            <li><i class="bi bi-speedometer2"></i>Nozzle-wise shifts</li>
+            <li><i class="bi bi-droplet-half"></i>Tank dips</li>
+            <li><i class="bi bi-journal-check"></i>Full accounts</li>
+            <li><i class="bi bi-people"></i>Udhaar &amp; investors</li>
+          </ul>
+        </section>
+        <section class="auth-card" aria-labelledby="setup-title">
+          <h2 id="setup-title">Create owner account</h2>
+          <div class="sub">This is the only step needed before you start.</div>
+          <form id="setup-form" novalidate>
+            <div class="field"><input type="text" id="setup-name" placeholder=" " autocomplete="name" required><i class="bi bi-person lead-icon"></i><label for="setup-name">Owner full name</label></div>
+            <div class="field"><input type="text" id="setup-username" placeholder=" " autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required><i class="bi bi-at lead-icon"></i><label for="setup-username">Username (letters, numbers)</label></div>
+            <div class="field"><input type="password" id="setup-password" placeholder=" " autocomplete="new-password" required><i class="bi bi-lock lead-icon"></i><label for="setup-password">Password (min 6 characters)</label></div>
+            <div class="field"><input type="password" id="setup-password2" placeholder=" " autocomplete="new-password" required><i class="bi bi-lock-fill lead-icon"></i><label for="setup-password2">Repeat password</label></div>
+            <div id="setup-error" class="alert alert-danger py-2 small d-none"></div>
+            <button type="submit" class="btn btn-grad btn-login w-100" id="setup-btn"><span>Create account &amp; start</span><i class="bi bi-arrow-right"></i></button>
+          </form>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sign in -->
   <div id="view-login" class="d-none">
     <div class="auth">
       <div class="auth-bg" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span><div class="grid-lines"></div></div>
       <div class="auth-inner">
         <section class="auth-hero">
           <div class="brand-row">
-            <div class="brand-mark"><img src="icons/icon-192.png" alt=""></div>
-            <div><div class="name">SaleAPP POS</div><div class="tag">Point of Sale · Inventory · Accounts</div></div>
+            <div class="brand-mark"><i class="bi bi-fuel-pump-fill"></i></div>
+            <div><div class="name">PetroPump ERP</div><div class="tag">Pakistan petrol pump software</div></div>
           </div>
-          <h1>Run your whole business <span class="grad">from one app.</span></h1>
-          <p class="lead-sm">Sell, buy, track stock and keep your accounts — for any shop, wholesaler or distributor. Works even without internet.</p>
-          <ul class="feature-chips">
-            <li><i class="bi bi-wifi-off"></i>Works offline</li>
-            <li><i class="bi bi-box-seam"></i>Inventory</li>
-            <li><i class="bi bi-journal-check"></i>Accounts &amp; ledgers</li>
-            <li><i class="bi bi-upc-scan"></i>Barcode</li>
-            <li><i class="bi bi-printer"></i>Bluetooth receipts</li>
-            <li><i class="bi bi-translate"></i><span class="ur-chip">اردو رسید</span></li>
-          </ul>
+          <h1>Every litre, every rupee, <span class="grad">accounted.</span></h1>
+          <p class="lead-sm">Shifts and nozzle readings, tank dips, udhaar, investors, payables, aging and full financial statements, in one offline-first app.</p>
           <div class="hero-art" aria-hidden="true">
-            <svg viewBox="0 0 520 330" xmlns="http://www.w3.org/2000/svg">
+            <svg viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg">
               <defs>
-                <linearGradient id="hg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff" stop-opacity=".22"/><stop offset="1" stop-color="#ffffff" stop-opacity=".06"/></linearGradient>
-                <linearGradient id="hg2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#a5b4fc"/><stop offset="1" stop-color="#6366f1"/></linearGradient>
-                <linearGradient id="hg3" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f0abfc"/><stop offset="1" stop-color="#c026d3"/></linearGradient>
+                <linearGradient id="pumpBody" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#dbe7f7"/></linearGradient>
+                <linearGradient id="fuelGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f97316"/></linearGradient>
               </defs>
+              <rect x="20" y="268" width="380" height="14" rx="7" fill="rgba(255,255,255,.18)"/>
               <g class="float-a">
-                <rect x="40" y="30" width="330" height="220" rx="22" fill="url(#hg1)" stroke="rgba(255,255,255,.25)"/>
-                <circle cx="66" cy="54" r="5" fill="#f87171"/><circle cx="82" cy="54" r="5" fill="#fbbf24"/><circle cx="98" cy="54" r="5" fill="#34d399"/>
-                <rect x="64" y="78" width="120" height="12" rx="6" fill="rgba(255,255,255,.55)"/>
-                <rect x="64" y="98" width="80" height="22" rx="8" fill="#fff"/>
-                <rect class="bar" x="70"  y="170" width="26" height="54"  rx="6" fill="url(#hg2)" style="animation-delay:.1s"/>
-                <rect class="bar" x="110" y="150" width="26" height="74"  rx="6" fill="url(#hg2)" style="animation-delay:.2s"/>
-                <rect class="bar" x="150" y="180" width="26" height="44"  rx="6" fill="url(#hg2)" style="animation-delay:.3s"/>
-                <rect class="bar" x="190" y="130" width="26" height="94"  rx="6" fill="url(#hg2)" style="animation-delay:.4s"/>
-                <rect class="bar" x="230" y="145" width="26" height="79"  rx="6" fill="url(#hg2)" style="animation-delay:.5s"/>
-                <rect class="bar" x="270" y="110" width="26" height="114" rx="6" fill="url(#hg3)" style="animation-delay:.6s"/>
-                <rect class="bar" x="310" y="125" width="26" height="99"  rx="6" fill="url(#hg2)" style="animation-delay:.7s"/>
+                <rect x="120" y="60" width="150" height="210" rx="18" fill="url(#pumpBody)"/>
+                <rect x="140" y="82" width="110" height="64" rx="10" fill="#0f172a" opacity=".85"/>
+                <text x="195" y="124" text-anchor="middle" font-size="26" font-weight="700" fill="#67e8f9" font-family="monospace">1234.5678</text>
+                <rect x="140" y="160" width="110" height="18" rx="6" fill="#0b5cad"/>
+                <rect x="140" y="184" width="110" height="18" rx="6" fill="#16a34a"/>
+                <clipPath id="tankClip"><rect x="140" y="212" width="110" height="46" rx="8"/></clipPath>
+                <rect x="140" y="212" width="110" height="46" rx="8" fill="rgba(15,23,42,.12)"/>
+                <g clip-path="url(#tankClip)"><rect class="fuel-level" x="140" y="212" width="110" height="46" fill="url(#fuelGrad)"/></g>
               </g>
-              <g class="float-b">
-                <path d="M392 70 h96 a10 10 0 0 1 10 10 v170 l-12 -8 l-12 8 l-12 -8 l-12 8 l-12 -8 l-12 8 l-12 -8 l-12 8 l-12 -8 V80 a10 10 0 0 1 10 -10z" fill="#fff"/>
-                <rect x="410" y="92" width="64" height="9" rx="4.5" fill="#6366f1"/>
-                <rect x="404" y="114" width="76" height="6" rx="3" fill="#e5e7eb"/><rect x="404" y="128" width="58" height="6" rx="3" fill="#e5e7eb"/>
-                <rect x="404" y="142" width="70" height="6" rx="3" fill="#e5e7eb"/><rect x="404" y="156" width="48" height="6" rx="3" fill="#e5e7eb"/>
-                <rect x="404" y="178" width="76" height="2" fill="#c7d2fe"/>
-                <rect x="404" y="190" width="40" height="10" rx="5" fill="#111827"/><rect x="452" y="190" width="28" height="10" rx="5" fill="#16a34a"/>
-                <g transform="translate(410 208)"><rect width="2" height="18" fill="#111827"/><rect x="5" width="1" height="18" fill="#111827"/><rect x="9" width="3" height="18" fill="#111827"/><rect x="15" width="1" height="18" fill="#111827"/><rect x="19" width="2" height="18" fill="#111827"/><rect x="24" width="1" height="18" fill="#111827"/><rect x="28" width="3" height="18" fill="#111827"/><rect x="34" width="2" height="18" fill="#111827"/><rect x="39" width="1" height="18" fill="#111827"/><rect x="43" width="3" height="18" fill="#111827"/><rect x="49" width="2" height="18" fill="#111827"/><rect x="54" width="1" height="18" fill="#111827"/><rect x="58" width="3" height="18" fill="#111827"/></g>
-              </g>
-              <g class="float-b"><circle cx="34" cy="272" r="26" fill="#fbbf24"/><circle cx="34" cy="272" r="18" fill="none" stroke="#fde68a" stroke-width="3"/><text x="34" y="279" text-anchor="middle" font-size="18" font-weight="800" fill="#92400e">Rs</text></g>
-              <g class="float-a"><rect x="300" y="262" width="62" height="50" rx="8" fill="#22d3ee"/><path d="M300 278 h62" stroke="#0e7490" stroke-width="3"/><rect x="322" y="262" width="18" height="16" fill="#67e8f9"/></g>
+              <path class="hose" d="M270 130 C 320 130, 320 210, 300 230" fill="none" stroke="#0f172a" stroke-width="8" stroke-linecap="round" opacity=".55"/>
+              <g class="float-b"><rect x="282" y="222" width="34" height="26" rx="8" fill="#0f172a"/></g>
+              <g class="float-b"><circle cx="72" cy="90" r="28" fill="#fbbf24"/><text x="72" y="98" text-anchor="middle" font-size="20" font-weight="800" fill="#7c2d12">Rs</text></g>
+              <g class="float-a"><rect x="318" y="60" width="78" height="56" rx="12" fill="#ffffff" opacity=".95"/><rect class="bar" x="330" y="92" width="10" height="16" rx="3" fill="#0b5cad"/><rect class="bar" x="346" y="82" width="10" height="26" rx="3" fill="#16a34a" style="animation-delay:.15s"/><rect class="bar" x="362" y="74" width="10" height="34" rx="3" fill="#f97316" style="animation-delay:.3s"/></g>
             </svg>
           </div>
         </section>
-
         <section class="auth-card" aria-labelledby="login-title">
           <h2 id="login-title">Welcome back</h2>
-          <div class="sub">Sign in to your shop to continue</div>
-          <div id="login-notice" class="alert alert-warning small d-none"></div>
+          <div class="sub">Sign in to your pump office</div>
+          <div id="login-notice" class="alert alert-info small d-none"></div>
           <form id="login-form" novalidate>
             <div class="field">
               <input type="text" id="login-username" name="username" placeholder=" " autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required>
@@ -102,8 +118,7 @@
             <div id="login-error" class="alert alert-danger py-2 small d-none"></div>
             <button type="submit" class="btn btn-grad btn-login w-100" id="login-btn"><span>Sign in</span><i class="bi bi-arrow-right"></i></button>
           </form>
-          <div class="auth-foot" id="login-conn"></div>
-          <div class="text-center small mt-2" style="color:#8a8fa3">Internet is needed to sign in. After that the app works offline.</div>
+          <div class="text-center small mt-3 auth-note">Works offline. Your data stays on this device; use Backup to keep a copy.</div>
         </section>
       </div>
     </div>
@@ -112,7 +127,7 @@
   <!-- Application -->
   <div id="view-app" class="d-none">
     <aside id="sidebar" class="d-none d-lg-flex flex-column">
-      <div class="sidebar-brand"><div class="logo"><img src="icons/icon-192.png" alt=""></div> <span id="brand-name">SaleAPP POS</span></div>
+      <div class="sidebar-brand"><div class="logo"><i class="bi bi-fuel-pump-fill"></i></div> <span id="brand-name">PetroPump ERP</span></div>
       <nav class="nav flex-column flex-grow-1 overflow-auto nav-menu" aria-label="Main"></nav>
     </aside>
     <div class="app-main">
@@ -127,17 +142,17 @@
             <li><hr class="dropdown-divider"></li>
             <li><a class="dropdown-item" href="#/settings"><i class="bi bi-gear me-2"></i>Settings</a></li>
             <li><button class="dropdown-item d-none" id="install-btn"><i class="bi bi-download me-2"></i>Install app</button></li>
-            <li><button class="dropdown-item text-danger" id="logout-btn"><i class="bi bi-box-arrow-right me-2"></i>Log out</button></li>
+            <li><button class="dropdown-item text-danger" id="logout-btn"><i class="bi bi-box-arrow-right me-2"></i>Sign out</button></li>
           </ul>
         </div>
       </header>
       <main id="content" tabindex="-1"></main>
     </div>
     <nav id="bottom-nav" class="d-lg-none" aria-label="Quick navigation">
-      <a href="#/dashboard" data-route="dashboard"><i class="bi bi-house"></i><span>Home</span></a>
-      <a href="#/sales" data-route="sales"><i class="bi bi-receipt"></i><span>Sales</span></a>
-      <a href="#/pos" data-route="pos" class="nav-sell"><i class="bi bi-cart-plus-fill"></i><span>Sell</span></a>
-      <a href="#/products" data-route="products"><i class="bi bi-box-seam"></i><span>Products</span></a>
+      <a href="#/dashboard" data-route="dashboard"><i class="bi bi-speedometer2"></i><span>Home</span></a>
+      <a href="#/shifts" data-route="shifts"><i class="bi bi-fuel-pump"></i><span>Shifts</span></a>
+      <a href="#/sales" data-route="sales" class="nav-sell"><i class="bi bi-cart-plus-fill"></i><span>Sale</span></a>
+      <a href="#/vouchers" data-route="vouchers"><i class="bi bi-cash-coin"></i><span>Cash</span></a>
       <a href="#" data-bs-toggle="offcanvas" data-bs-target="#menu-offcanvas"><i class="bi bi-grid"></i><span>More</span></a>
     </nav>
   </div>
@@ -157,7 +172,6 @@
   <noscript><div class="alert alert-danger m-3">JavaScript is required to run this application.</div></noscript>
   <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-  <script src="js/core/link-login.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

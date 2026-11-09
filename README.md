@@ -1,146 +1,99 @@
-# SaleAPP POS
+# PetroPump ERP
 
-Offline-first, mobile-first Point of Sale as a static PWA (no build step).
-HTML5 · ES modules · jQuery · Bootstrap 5 · Bootstrap Icons · IndexedDB · Service Worker · eposwala login API.
+Offline-first ERP for a Pakistani petrol pump: fuel and lubricant sales, nozzle-wise shifts, tanks and dip readings, OMC purchases, udhaar (credit) customers, suppliers, employees, investors, vouchers, a full double-entry ledger, and financial statements.
 
-## Features
+It is a static PWA: no build step, no server, no external login. It works offline.
 
-- **POS sales**: search, camera/hardware barcode scan, cart with qty/rate/discount, bill discount, tax, cash/bank/credit/partial payments, change calculation, hold/resume, edit, void, returns, receipt printing. The cart survives page refresh.
-- **Purchases**: suppliers, purchase rate, discount, paid/remaining, edit, void, returns. Can update product cost from the latest purchase.
-- **Products & categories**: SKU, barcode (scan or generate EAN-13), unit, purchase/sale/wholesale prices, opening/min stock, compressed images, services (no stock).
-- **Customers & suppliers**: contact info, opening balance, ledger/statement (print), payments.
-- **Accounts / cash book**: cash, bank/wallet, income, expense, asset, liability accounts. Receipts, payments and transfers use double-entry ledger entries.
-- **Stock**: current stock, low/out-of-stock, stock ledger per product, adjustments (add/remove/set count) with void.
-- **Reports** (print + CSV): daily sales, sales by range, sales/purchase returns, product-wise sales/purchases, customer/supplier ledgers, receivables, payables, cash book, account ledger, daily closing, stock (as of date), profit summary.
-- **Backup & restore**: versioned JSON with checksum, validation preview, replace or merge.
-- **PWA**: installable, works fully offline after the first online login.
+Stack: HTML5 · ES modules · jQuery · Bootstrap 5 · Bootstrap Icons · IndexedDB · Service Worker.
 
-## Architecture
+## What it covers
 
-```
-index.html              App shell (splash, login, layout)
-manifest.json           PWA manifest
-service-worker.js       Precache of shell + CDN libs; cache-first; /api/ requests never cached
-css/app.css
-js/app.js               Boot, auth gate + session expiry, router (lazy-loaded modules), connection badge, SW updates
-js/config.js            Login API base URL, support phone, app/schema/backup versions
-js/core/                utils, settings (LocalStorage), UI helpers, shared views
-js/db/                  IndexedDB wrapper (atomic multi-store transactions) + schema
-js/services/            auth, catalog (in-memory search index), posting engine, backup
-js/modules/             dashboard, pos (sale + purchase), documents, products, stock, parties, vouchers, accounts, settings, backup
-js/reports/             reports
-js/printer/             ESC/POS encoder, receipt builder, Bluetooth/RawBT/browser printing
-js/scanner/             camera scanning + keyboard-wedge scanner detection
-```
+| Area | What you can do |
+| --- | --- |
+| **Shifts & meters** | Open a shift with the opening meter of every nozzle. At close, enter the closing meters. Litres and amount per nozzle show live, at the rate in force when the shift opened. Settle cash, card or bank, JazzCash/Easypaisa and udhaar. A cash short or excess is posted automatically. |
+| **Counter sales** | Lubricants and shop items. Tax is split out of the tax-inclusive rate. Part payment now, the rest on udhaar. A void reverses the stock and the ledger. |
+| **Purchases** | Fuel from OMCs into a chosen tank, goods into stock. Freight, levy and other charges. Payment now, the rest payable to the supplier. |
+| **Tanks & dips** | Animated tank gauges. Book stock = opening + receipts − nozzle sales. Record a physical dip, see the variance, and post a shortage (loss) or excess (gain). |
+| **Stock** | Moving-average cost per product. Goods counted with adjustments. Movement ledger per product. |
+| **Products & rates** | Set the rate after each government or OMC notification. Dated rate history. |
+| **Pumps & nozzles** | Each nozzle draws one product from one tank. Meter readings carry over to the next shift. |
+| **Customers (udhaar)** | Statement with running balance, receipts, credit limit. |
+| **Suppliers & OMCs** | Statement, payments, payable balance. |
+| **Employees** | Salary and advance vouchers, advance balance, statement. |
+| **Investors** | Capital in, drawings, profit share (% of period profit), profit paid, unpaid profit. |
+| **Fixed assets** | Machinery, tanks, building, vehicles. Straight-line depreciation, one posting per asset per month. |
+| **Vouchers** | Receipts, supplier payments, expenses, salaries, advances, capital, drawings, profit paid, bank deposits, transfers, loans, customer advances, and manual journal vouchers that must balance. |
+| **Accounts** | Chart of accounts with balances. Add accounts. Ledger for any account. |
+| **Reports** | Trial balance, profit and loss, balance sheet, cash and bank book, day book, receivable and payable aging (FIFO: 0–30, 31–60, 61–90, over 90 days), sales by product, shift cash, tank reconciliation, investor shares. Print and CSV. |
+| **Users** | Owner, Manager, Accountant, Attendant/Cashier. Passwords hashed with PBKDF2-SHA-256. |
+| **Backup & restore** | One JSON file with every record, the settings and a SHA-256 checksum. A restore asks for confirmation and checks the checksum first. |
 
-### Storage
+Amounts, litres and rates are stored and calculated to **4 decimal places**. The display can be set to 2, 3 or 4 decimals in Settings. Values are rounded to 4 decimals after each multiplication or division, so totals do not drift.
 
-| Where | What |
-|---|---|
-| IndexedDB `disterp_pos` | All business data: products, categories, customers, suppliers, accounts, sales + items, purchases + items, returns, vouchers, **ledger entries**, **stock moves**, adjustments, held sales, audit log, counters |
-| LocalStorage | Settings (business profile, tax, prefixes, printer, theme), device preferences, `disterp.session` (`{ token, expiresAt, username }`), `disterp.settings`, `disterp.pref.*`, `disterp.draft.*`, and the shared phone id `minipos.deviceId` |
+## Accounting model
 
-**Shared origin.** Every GitHub Pages site under `designer-haxxan.github.io` is the *same origin*, so all of them share one IndexedDB, LocalStorage and Cache Storage. This app therefore namespaces everything with `CONFIG.APP_ID` (`disterp`): database `disterp_pos`, keys `disterp.*`, caches `disterp-v*`. Its service worker deletes only its own caches, and rebuilds its cache if another app deleted it. The old shared database `saleapp_pos` (also used by AgriSale / pharmaSaleApp) is never modified. *Backup & Restore* offers to import it after showing its record counts. If you copy this app for another shop, **change `APP_ID`** in `js/config.js` and `service-worker.js`.
+- Every business event (sale, purchase, shift, dip, voucher, depreciation, asset purchase) writes a balanced transaction to the `entries` store. It is written in the same IndexedDB transaction as the document and its stock movements. If any step fails, nothing is written.
+- Entries are never edited. A void is a reversing transaction, and the document is marked `void`.
+- Control accounts (Receivable, Payable, Employee advance, Investor capital) carry a `partyId`. Each party's statement is a filter on the same ledger.
+- Account IDs (for example `sales_petrol`, `inv_fuel`, `cash`) are stable strings used by the posting code (see `js/db/schema.js`). New accounts can be added with new codes. Existing IDs must not be renamed.
+- Shift posting: `Dr Cash (counted)`, `Dr Bank/Wallet` per line, `Dr Udhaar` per customer, and `Dr Cash short` if short. Against these: `Cr Fuel income` per product, `Cr Sales tax payable`, and `Cr Cash excess` if over. Cost of fuel sold is `Dr COGS / Cr Fuel stock` at average cost.
 
-**Data integrity.** Each operation (sale, purchase, return, voucher, adjustment, edit, void) runs in **one IndexedDB transaction**. That transaction writes:
+## Assumptions to confirm with your accountant
 
-- the document and its lines
-- stock moves and the cached product stock
-- balanced double-entry ledger entries (the transaction is refused if they don't balance)
-- the invoice counter
-- the audit record
+These are defaults. Change them in Products & rates, in Settings, or in the chart of accounts before go-live.
 
-Any failure aborts everything. Document IDs are generated when the cart is created, so a double tap or a retry after a refresh is detected as a duplicate instead of saving twice. Invoice numbers (`SALE-000001`…) come from a counter inside the same transaction, backed by a unique index. Failed transactions don't consume numbers.
+1. **"Mobile" in the brief** is read as Mobil lubricants (engine oil). If you meant mobile phone top-ups or recharge cards, that needs its own stock type.
+2. **Sales tax**: fuel is 0% per product by default. Lubricants are 18%. Shop items are 0%. Check the rates on your OMC and supplier invoices.
+3. **Counter rates include tax** by default (Settings: "Counter rates include sales tax?"). Set it to "No" if your rates exclude tax.
+4. **Petroleum levy and carbon levy** are not calculated automatically. Enter them as "other charges" on the purchase that carries them, or post a journal voucher to *Petroleum Levy Payable*.
+5. **Depreciation** is straight-line over the life you enter, one posting per month.
+6. **Investor profit share** is the investor's % of net profit for the period you select. Profit payments are recorded as separate vouchers.
+7. **One device.** Data lives in one browser on one device. Use Backup & restore to move or copy it. There is no multi-device sync.
 
-**Balances and reports are always derived from records.** Customer, supplier and account balances come from ledger entries. Stock-as-of-date comes from stock moves. The cached `product.stock` is updated in the same transaction and can be checked or rebuilt under *Settings → App & data*.
+## Run it
 
-### Authentication
-
-Login uses the eposwala API (`CONFIG.AUTH_API_BASE`, default `https://eposwala.com/api`):
-
-```
-POST /api/login   Content-Type: application/json
-{ "username": "...", "password": "...", "deviceId": "..." }
-2xx  → { "token": "...", "expiresAt": <unix ms>, "username": "..." }
-!2xx → { "error": "missing_fields" | "invalid_credentials" | "device_mismatch" | "account_disabled" }
-```
-
-- **Login requires internet.** Each error code is shown as a specific message; anything else shows "Login failed. Try again."
-- **One device per account.** `deviceId` is a UUID created once per browser and stored in `localStorage["minipos.deviceId"]`. The server binds the account to it, and logging out does not remove the binding. Moving to another phone goes through support (`CONFIG.SUPPORT_PHONE`).
-- **Session.** `{ token, expiresAt, username }` is stored verbatim in `localStorage["disterp.session"]`. The POS works offline, including across restarts, until `expiresAt`. When it passes, the app returns to the login screen, both at startup and during use (checked every minute and on every navigation). Passwords are never stored.
-- **Logout** only clears the local session; the API has no logout endpoint.
-- **Permissions.** The logged-in account is the shop owner and gets every POS function. If the server ever adds a `role` field (`manager` / `cashier`) to the login response, the app's role permissions apply automatically.
-
-### Offline behaviour
-
-- The service worker precaches the shell, every module, icons, CDN libraries and the icon fonts. The app loads with no network at all.
-- All POS work (sales, purchases, stock, payments, ledgers, reports, printing, scanning, backup) runs entirely on local data.
-- The status badge shows **Online / Offline**.
-- The app asks the browser for **persistent storage** so data is not evicted.
-
-## Setup
-
-### 1. Login API
-
-Set `AUTH_API_BASE` and `SUPPORT_PHONE` in `js/config.js` if they differ from the defaults.
-
-**CORS:** `https://eposwala.com/api/login` currently sends no CORS headers. Browsers can therefore only call it from pages served by **https://eposwala.com** itself. To run the app from another origin, including `localhost`, the API must return `Access-Control-Allow-Origin` for that origin and answer the `OPTIONS` preflight with `Access-Control-Allow-Headers: content-type`.
-
-### 2. Run locally
-
-The app needs to be served over HTTP (ES modules and service worker). `localhost` counts as a secure context. Login from `localhost` only works once the API allows that origin (see CORS above).
+Serve the folder over HTTP. The service worker needs `http://localhost` or HTTPS.
 
 ```bash
-python -m http.server 8765
+python -m http.server 8765 --bind 127.0.0.1
 ```
 
-Then open http://localhost:8765.
+Open `http://localhost:8765`. On first run, create the owner account. The chart of accounts and ten sample products (fuel and lubricants) are seeded automatically. Then:
 
-### 3. Deploy
+1. **Products & rates**: set today's rate for each fuel and lubricant.
+2. **Pumps & nozzles**: add the dispensers and nozzles. Add tanks under **Tanks & dips**, with opening stock.
+3. **Investors, suppliers, customers, employees**: add the parties.
+4. Open a shift, close it, and check the cash reconciliation.
 
-**GitHub Pages:** this repository is served from branch `main`, folder `/ (root)` (*Settings → Pages*), at https://designer-haxxan.github.io/DistERP/. All paths are relative, so the app works from that sub-path. `.nojekyll` makes Pages serve the files unchanged. Login from `github.io` only works once the eposwala API allows the origin `https://designer-haxxan.github.io` (see CORS above).
+Deploy: any static host over HTTPS (GitHub Pages, Netlify, or your own server).
 
+**Shipping updates:** the service worker caches the app shell. When you change any file, bump `VERSION` in `service-worker.js` (for example `petropump-v2.0.1`). Otherwise phones keep serving the old files.
 
-Host the folder on **https://eposwala.com** (e.g. an IIS site or virtual directory next to `/api`), or on any other HTTPS host once the API allows that origin. **HTTPS is required** for the service worker, camera and Web Bluetooth.
+## Project layout
 
-When you change any file, bump `VERSION` in `service-worker.js`. Installed apps update automatically the next time they are opened online (files are fetched bypassing the HTTP cache; the page reloads and POS carts are kept).
+```
+index.html                 App shell: first-run setup, sign-in, layout
+manifest.json              PWA manifest
+service-worker.js          Precache and offline cache (bump VERSION on every release)
+css/app.css                Design system: tokens, dark mode, motion, print styles
+js/config.js               App id, version, backup version
+js/app.js                  Boot, setup and sign-in gate, router, menu
+js/core/money.js           4-decimal rounding and formatting
+js/core/settings.js        Company profile and rules (LocalStorage)
+js/core/ui.js              Modals, toasts, confirm dialogs, skeletons, count-up
+js/core/views.js           Ledger tables, date filters, tank gauge, badges
+js/db/schema.js            IndexedDB stores, indexes, chart of accounts, seed products
+js/db/idb.js               Promise wrapper with atomic multi-store transactions
+js/services/auth.js        Local users, PBKDF2, roles and permissions
+js/services/ledger.js      Document numbering, journal (balanced transactions), reversals
+js/services/stock.js       Moving-average stock, tank book, reversals
+js/services/posting.js     Sales, purchases, shifts, dips, vouchers, assets, depreciation, rates
+js/services/openings.js    Opening stock and opening balances
+js/services/finance.js     Trial balance, P&L, balance sheet, ledgers, day book, FIFO aging
+js/modules/*.js            One file per screen
+```
 
-## Backup & restore
+## Limits and next steps
 
-- **Export** downloads one JSON file:
-  ```json
-  { "format", "backupVersion", "appVersion", "schemaVersion", "createdAt", "createdBy", "counts", "checksum", "settings", "data": { ... } }
-  ```
-  `data` holds every collection. `checksum` is a SHA-256 of the data. No credentials are included.
-- **Import** validates everything before any data changes:
-  - JSON structure
-  - format and backup/schema versions
-  - IDs and required fields for each record
-  - duplicate records or document numbers
-  - record counts against the header (detects truncation)
-  - checksum (detects corruption or tampering)
-  - ledger balance
-  
-  You then see the backup date and record counts. You can optionally download a safety backup first, then choose:
-  - **Replace**: erases local data and loads the backup. You must type `REPLACE` to confirm. It runs in one transaction, so a failure leaves the existing data untouched.
-  - **Merge**: adds missing records and updates records that are newer in the backup. Documents are merged together with their lines, ledger entries and stock moves, so edited documents are never double-counted. Document-number conflicts are skipped and listed. Stock caches are recomputed afterwards.
-
-## Printing & scanning support
-
-| Capability | Where it works | Notes |
-|---|---|---|
-| Web Bluetooth ESC/POS (58/80 mm) | Chrome/Edge on Android, Windows, macOS, Linux, ChromeOS (HTTPS) | Only **BLE** printers; most cheap "classic Bluetooth SPP" printers are not reachable from browsers. Not available in Safari, Firefox or any iOS browser. Known printer channels are tried first (18F0/2AF1, E781…/BEF8…, ISSC 4953…, FF00/FF02, AE30/AE01, FFE0/FFE1, FEE7/FEC7), then blind discovery. Data goes out in 20-byte chunks by default, with acknowledged writes when the printer supports them (Settings → Transfer speed: 20/100/180 bytes). Connecting retries 3×. The printer reconnects silently via `getDevices()` / `watchAdvertisements()` where supported. Print jobs are queued. |
-| RawBT | Android | Free RawBT app bridges ESC/POS data to classic Bluetooth, USB and network printers. |
-| Browser print | Everywhere | Uses 58/80 mm receipt CSS; works with AirPrint, system print services and PDF. Also used automatically as a fallback. |
-| Urdu receipts | All print methods | Urdu/Arabic text (shop name, products, customers, footer…) is drawn with **Jameel Noori Nastaleeq** (`fonts/`, loaded only for Urdu characters via `unicode-range`). For ESC/POS (Bluetooth/RawBT), only lines that contain Urdu are rasterised and sent as `GS v 0` bitmaps; Latin lines stay as fast printer text. Image mode is selectable in *Settings → Printer → Urdu printing mode*: `GS v 0` (default) or `ESC *` for older printers. *Test print* includes Urdu lines. Font: "Free of charge for Urdu lovers" (embedding: preview & print). |
-| Camera scanning | HTTPS on Android/iOS/desktop | Uses the native `BarcodeDetector` when available (Chrome Android), otherwise lazy-loads `html5-qrcode`. Camera permission errors show guidance and a manual-entry field. |
-| Camera permission help | Android / iOS / desktop | Before requesting, the scanner explains and asks via an **Allow camera** tap. When blocked it diagnoses the cause and shows matching steps: *in-app browser* (WhatsApp/Facebook/Instagram → **Open in Chrome** button), *blocked by the phone* ("Permission denied by system": quick-settings Camera access, Android app permission for Chrome/Samsung Internet), *blocked for the site* (Chrome/Samsung Internet site settings; Chrome only lists a site after it has asked once, and an installed app's *App info → Permissions* can show nothing, which is normal) or *prompt dismissed*. It warns never to use *Clear & reset*, because that deletes the POS data. |
-| Hardware scanners | Everywhere | USB/Bluetooth HID "keyboard wedge" scanners work in the search field and anywhere on the POS screen (fast keystrokes + Enter). |
-
-## Known limitations
-
-- **Data lives on the device.** There is no multi-device cloud sync of POS data. Use backups regularly; the dashboard reminds you after 7 days. To combine data from several devices, give each device different number prefixes (*Settings*) and use **Merge**.
-- **Anyone with physical access can read local data.** The offline session gate is client-side. A person with the device and developer tools can read IndexedDB. Use device lock screens.
-- **No user management in the app.** Accounts, passwords, device resets and disabling are handled on the eposwala server side. The API has no endpoints for them.
-- **Cost of goods sold uses the last purchase price** recorded on each sale line, not FIFO or weighted average.
-- **iOS has no Web Bluetooth.** Print via AirPrint or the browser dialog instead.
+- **Not included yet:** thermal (ESC/POS) receipt printing, Urdu receipts, bank reconciliation, cheque register, payroll tax and EOBI/PESSI deductions, withholding tax, e-invoicing and FBR POS integration, multi-device sync, barcode scanning, and an automated test suite. Each can be added on top of the current ledger.
+- **Existing SaleAPP data is not migrated.** The new app uses its own database (`petropump_erp`), so it cannot touch the old one. Use the old app's backup if you need that data.

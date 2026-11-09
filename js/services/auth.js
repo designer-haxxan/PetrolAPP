@@ -1,115 +1,117 @@
-// Authentication against the eposwala login API (POST {AUTH_API_BASE}/login).
-// One account is bound server-side to one device (deviceId). After a successful online login the
-// session { token, expiresAt, username } is kept in LocalStorage and the POS works offline until
-// expiresAt. Passwords are never stored.
-import { CONFIG, storageKey } from '../config.js';
-import { AppError } from '../core/utils.js';
+// Local user accounts (works fully offline). Passwords are hashed with PBKDF2-SHA-256 and never stored in clear text.
+// Session = { userId, at } in LocalStorage; the user row is read from IndexedDB on each start.
+import { storageKey } from '../config.js';
+import { AppError, uuid, nowISO, lc } from '../core/utils.js';
+import { get, getAll, write, read } from '../db/idb.js';
 
 const SESSION_KEY = storageKey('session');
-// Device id identifies the PHONE (the server binds the account to it), so it is intentionally shared by all
-// apps on this origin; changing it would make the server reply device_mismatch.
-const DEVICE_KEY = 'minipos.deviceId';
+const ITER = 210000;
+const IDLE_LIMIT_MS = 12 * 60 * 60 * 1000; // sign in again after 12 hours without use
 
-// Exact error codes returned by the API → user-facing messages.
-const ERRORS = {
-  missing_fields: 'Enter your username and password.',
-  invalid_credentials: 'Wrong username or password.',
-  device_mismatch: `This account is already active on another phone. Call ${CONFIG.SUPPORT_PHONE} for help.`,
-  account_disabled: `This account has been disabled. Call ${CONFIG.SUPPORT_PHONE} for help.`,
+export const ROLES = { owner: 'Owner', manager: 'Manager', accountant: 'Accountant', cashier: 'Attendant / Cashier' };
+
+// Permission names: shift, sale, purchase, stock, dip, master, voucher, accounts, reports, assets, settings, users, backup
+const PERMS = {
+  owner: ['*'],
+  manager: ['shift', 'sale', 'purchase', 'stock', 'dip', 'master', 'voucher', 'accounts', 'reports', 'assets', 'settings'],
+  accountant: ['voucher', 'accounts', 'reports', 'assets', 'master', 'backup'],
+  cashier: ['shift', 'sale', 'dip', 'stock'],
 };
-const GENERIC = 'Login failed. Try again.';
-
-export const ROLES = { admin: 'Owner', manager: 'Manager', cashier: 'Cashier' };
-
-const CASHIER = ['sale.create', 'party.edit', 'voucher.create', 'reports.view'];
-const MANAGER = [...CASHIER, 'sale.edit', 'sale.void', 'sale.return', 'purchase.manage', 'product.edit', 'product.delete',
-  'party.delete', 'voucher.void', 'account.manage', 'stock.adjust', 'reports.profit', 'settings.manage', 'backup.export'];
-const PERMISSIONS = { cashier: CASHIER, manager: MANAGER, admin: ['*'] };
 
 let current = null;
 
-// Stable per-browser device id (sent with every login; the server binds the account to it).
-export function deviceId() {
-  let id = localStorage.getItem(DEVICE_KEY);
-  if (!id) {
-    id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
-    localStorage.setItem(DEVICE_KEY, id);
-  }
-  return id;
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+const unhex = (s) => Uint8Array.from(s.match(/../g).map((h) => parseInt(h, 16)));
+
+export async function hashPassword(password, saltHex = null, iter = ITER) {
+  const salt = saltHex ? unhex(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(String(password)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: iter, hash: 'SHA-256' }, key, 256);
+  return { salt: hex(salt), hash: hex(bits), iter };
 }
 
-function readSession() {
-  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { return null; }
+const publicUser = (u) => (u ? { id: u.id, username: u.username, name: u.name, role: u.role } : null);
+
+export async function hasUsers() {
+  const all = await getAll('users');
+  return all.length > 0;
 }
 
-// The API identifies a shop account by username; that account owns all POS functions on its device.
-// If the server ever includes a known `role`, it is honoured.
-function toUser(s) {
-  return { id: s.username, name: s.username, username: s.username, role: PERMISSIONS[s.role] ? s.role : 'admin' };
+// Creates a user row (password required). Throws if the username already exists.
+export async function createUser({ name, username, password, role }) {
+  if (!ROLES[role]) throw new AppError('Choose a valid role.');
+  if (String(password || '').length < 6) throw new AppError('Password must be at least 6 characters.');
+  const uname = String(username || '').trim();
+  if (!/^[A-Za-z0-9._-]{3,30}$/.test(uname)) throw new AppError('Username: 3–30 letters, numbers, dot, dash or underscore.');
+  const { salt, hash, iter } = await hashPassword(password);
+  const row = { id: uuid(), name: String(name || uname).trim(), username: uname, usernameLc: lc(uname), role, salt, hash, iter, active: true, createdAt: nowISO() };
+  await write(['users'], async (t) => {
+    if (await t.getByIndex('users', 'username', row.usernameLc)) throw new AppError('That username is already taken.');
+    await t.put('users', row);
+  });
+  return publicUser(row);
 }
 
-const isValid = (s) => !!(s && typeof s.token === 'string' && s.token && typeof s.username === 'string' && Number(s.expiresAt) > Date.now());
+export async function verifyPassword(row, password) {
+  const { hash } = await hashPassword(password, row.salt, row.iter || ITER);
+  return hash === row.hash;
+}
 
-// Returns { user } or { user:null, reason }
-export function restoreSession() {
-  const s = readSession();
-  if (!s) return { user: null };
-  if (!isValid(s)) {
-    localStorage.removeItem(SESSION_KEY);
-    current = null;
-    return { user: null, reason: 'Your session has expired. Connect to the internet and sign in again.' };
-  }
-  current = toUser(s);
-  return { user: current };
+export async function login(username, password) {
+  const uname = lc(username);
+  if (!uname || !password) throw new AppError('Enter your username and password.');
+  const row = (await read(['users'], (t) => t.getByIndex('users', 'username', uname))) || null;
+  // Same message for unknown user and wrong password, to avoid leaking which usernames exist.
+  if (!row || !row.active || !(await verifyPassword(row, password))) throw new AppError('Wrong username or password.');
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: row.id, at: Date.now() }));
+  current = publicUser(row);
+  return current;
+}
+
+// Restores the session from LocalStorage on app start. Resolves to the user or null.
+export async function restoreSession() {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { s = null; }
+  if (!s?.userId || Date.now() - Number(s.at) > IDLE_LIMIT_MS) { logout(); return null; }
+  const row = await get('users', s.userId);
+  if (!row || !row.active) { logout(); return null; }
+  localStorage.setItem(SESSION_KEY, JSON.stringify({ userId: row.id, at: Date.now() }));
+  current = publicUser(row);
+  return current;
 }
 
 export const user = () => current;
-export const expiresAt = () => Number(readSession()?.expiresAt) || 0;
-export const sessionExpired = () => !!current && !isValid(readSession());
+
+export function logout() {
+  localStorage.removeItem(SESSION_KEY);
+  current = null;
+}
 
 export function can(perm) {
   if (!current) return false;
-  const p = PERMISSIONS[current.role] || [];
+  const p = PERMS[current.role] || [];
   return p.includes('*') || p.includes(perm);
 }
+
 export function require(perm) {
   if (!can(perm)) throw new AppError('You do not have permission for this action.', 'FORBIDDEN');
 }
 
-export async function login(username, password) {
-  username = String(username ?? '').trim();
-  password = String(password ?? '');
-  if (!username || !password) throw new AppError(ERRORS.missing_fields);
-  if (!navigator.onLine) throw new AppError('Internet connection is required to sign in.');
-
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
-  let res;
-  try {
-    res = await fetch(`${CONFIG.AUTH_API_BASE}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password, deviceId: deviceId() }),
-      credentials: 'omit', cache: 'no-store', signal: ctrl.signal,
-    });
-  } catch {
-    throw new AppError('Could not reach the login server. Check your internet connection and try again.');
-  } finally { clearTimeout(timer); }
-
-  let data = null;
-  try { data = await res.json(); } catch { /* non-JSON response */ }
-  if (!res.ok) throw new AppError(ERRORS[data?.error] || GENERIC);
-
-  const session = { token: data?.token, expiresAt: Number(data?.expiresAt), username: data?.username };
-  if (data?.role) session.role = data.role;
-  if (!isValid(session)) throw new AppError(GENERIC);
-  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  current = toUser(session);
-  return current;
+export async function changeOwnPassword(oldPw, newPw) {
+  if (!current) throw new AppError('Sign in first.');
+  if (String(newPw || '').length < 6) throw new AppError('New password must be at least 6 characters.');
+  const row = await get('users', current.id);
+  if (!(await verifyPassword(row, oldPw))) throw new AppError('Current password is wrong.');
+  const { salt, hash, iter } = await hashPassword(newPw);
+  await write(['users'], (t) => t.put('users', { ...row, salt, hash, iter }));
 }
 
-// Logout only clears the local session (the API has no logout endpoint). The device binding stays on the server.
-export function logout() {
-  localStorage.removeItem(SESSION_KEY);
-  current = null;
+// Owner resets another user's password (no old password needed).
+export async function resetPassword(userId, newPw) {
+  require('users');
+  if (String(newPw || '').length < 6) throw new AppError('Password must be at least 6 characters.');
+  const row = await get('users', userId);
+  if (!row) throw new AppError('User not found.');
+  const { salt, hash, iter } = await hashPassword(newPw);
+  await write(['users'], (t) => t.put('users', { ...row, salt, hash, iter }));
 }

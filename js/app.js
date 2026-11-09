@@ -1,33 +1,36 @@
-// Application bootstrap: service worker, database, authentication gate, navigation and routing.
+// Application bootstrap: service worker, database, first-run setup, login gate, navigation and routing.
 import { CONFIG } from './config.js';
 import { applyTheme, getSettings } from './core/settings.js';
 import * as UI from './core/ui.js';
 import { esc } from './core/utils.js';
 import { openDB } from './db/idb.js';
 import * as Auth from './services/auth.js';
-import * as Catalog from './services/catalog.js';
 
 const $ = window.jQuery;
 
 // Route table: name → [loader, title, permission|null, icon, menu section]
+const M = (f) => () => import(`./modules/${f}.js`);
 const ROUTES = {
-  dashboard: [() => import('./modules/dashboard.js'), 'Dashboard', null, 'house', 'Main'],
-  pos: [() => import('./modules/pos.js'), 'New Sale', 'sale.create', 'cart-plus', 'Main'],
-  sales: [() => import('./modules/documents.js'), 'Sales', null, 'receipt', 'Main'],
-  purchase: [() => import('./modules/pos.js'), 'New Purchase', 'purchase.manage', null, null],
-  purchases: [() => import('./modules/documents.js'), 'Purchases', 'purchase.manage', 'bag', 'Main'],
-  returns: [() => import('./modules/documents.js'), 'Returns', null, 'arrow-return-left', 'Main'],
-  products: [() => import('./modules/products.js'), 'Products', null, 'box-seam', 'Inventory'],
-  stock: [() => import('./modules/stock.js'), 'Stock', null, 'boxes', 'Inventory'],
-  customers: [() => import('./modules/parties.js'), 'Customers', null, 'people', 'Parties'],
-  suppliers: [() => import('./modules/parties.js'), 'Suppliers', 'purchase.manage', 'truck', 'Parties'],
-  vouchers: [() => import('./modules/vouchers.js'), 'Cash Book & Payments', 'voucher.create', 'cash-coin', 'Accounts'],
-  accounts: [() => import('./modules/accounts.js'), 'Accounts', 'account.manage', 'bank', 'Accounts'],
-  reports: [() => import('./reports/reports.js'), 'Reports', 'reports.view', 'bar-chart-line', 'Accounts'],
-  backup: [() => import('./modules/backup.js'), 'Backup & Restore', 'backup.export', 'cloud-arrow-down', 'Administration'],
-  settings: [() => import('./modules/settings.js'), 'Settings', null, 'gear', 'Administration'],
+  dashboard: [M('dashboard'), 'Dashboard', null, 'speedometer2', 'Main'],
+  shifts: [M('shifts'), 'Shifts & Meters', 'shift', 'fuel-pump', 'Operations'],
+  sales: [M('sales'), 'Counter Sales', 'sale', 'receipt', 'Operations'],
+  purchases: [M('purchases'), 'Fuel & Goods Purchases', 'purchase', 'truck', 'Operations'],
+  tanks: [M('tanks'), 'Tanks & Dip Readings', 'dip', 'droplet-half', 'Operations'],
+  stock: [M('stock'), 'Stock & Valuation', 'stock', 'boxes', 'Operations'],
+  products: [M('products'), 'Products & Prices', 'master', 'tags', 'Masters'],
+  machines: [M('machines'), 'Pumps & Nozzles', 'master', 'ev-front', 'Masters'],
+  customers: [M('parties'), 'Customers (Udhaar)', 'sale', 'people', 'Masters'],
+  suppliers: [M('parties'), 'Suppliers & OMCs', 'purchase', 'building', 'Masters'],
+  employees: [M('parties'), 'Employees', 'master', 'person-badge', 'Masters'],
+  investors: [M('parties'), 'Investors', 'accounts', 'piggy-bank', 'Masters'],
+  assets: [M('assets'), 'Fixed Assets', 'assets', 'bricks', 'Masters'],
+  vouchers: [M('vouchers'), 'Vouchers & Payments', 'voucher', 'cash-coin', 'Accounts'],
+  accounts: [M('accounts'), 'Chart of Accounts & Ledger', 'accounts', 'journal-bookmark', 'Accounts'],
+  reports: [M('reports'), 'Reports', 'reports', 'bar-chart-line', 'Accounts'],
+  users: [M('admin'), 'Users', 'users', 'person-gear', 'Administration'],
+  backup: [M('backup'), 'Backup & Restore', 'backup', 'cloud-arrow-down', 'Administration'],
+  settings: [M('settings'), 'Settings', 'settings', 'gear', 'Administration'],
 };
-const FOCUS_ROUTES = new Set(['pos', 'purchase']);
 
 let currentModule = null;
 let routeToken = 0;
@@ -35,6 +38,7 @@ let deferredInstall = null;
 
 function showView(name) {
   $('#splash').addClass('d-none');
+  $('#view-setup').toggleClass('d-none', name !== 'setup');
   $('#view-login').toggleClass('d-none', name !== 'login');
   $('#view-app').toggleClass('d-none', name !== 'app');
 }
@@ -48,12 +52,10 @@ function fatal(msg) {
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol === 'file:') return;
-  // New versions install and activate on their own (see service-worker.js); check whenever the app is opened.
   navigator.serviceWorker.register('service-worker.js').then((reg) => {
     const check = () => {
       if (!navigator.onLine) return;
       reg.update().catch(() => {});
-      // Other apps on this origin can wipe our offline cache; ask the worker to rebuild it if needed.
       (reg.active || navigator.serviceWorker.controller)?.postMessage({ type: 'ENSURE_CACHE' });
     };
     check();
@@ -61,7 +63,6 @@ function registerSW() {
     setInterval(check, 60 * 60 * 1000);
   }).catch((e) => console.warn('Service worker registration failed:', e));
   // Reload when an update replaces an existing worker, so the page never mixes files from two versions.
-  // (The very first install only takes control; nothing to reload.)
   let controlled = !!navigator.serviceWorker.controller;
   let reloading = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
@@ -79,38 +80,27 @@ export async function promptInstall() {
   deferredInstall = null; $('#install-btn').addClass('d-none');
   return true;
 }
-export const canInstall = () => !!deferredInstall;
-
-// ---------- Connection badge ----------
-function renderConn(status) {
-  const map = { online: ['wifi', 'Online'], offline: ['wifi-off', 'Offline'] };
-  const [icon, label] = map[status] || map.offline;
-  $('#conn-badge').attr('class', `badge rounded-pill conn-${status}`).html(`<i class="bi bi-${icon}"></i> <span>${label}</span>`);
-  $('#login-conn').html(navigator.onLine ? '<i class="bi bi-wifi text-success"></i> Online' : '<i class="bi bi-wifi-off text-danger"></i> Offline — connect to the internet to sign in');
-}
-window.addEventListener('online', () => renderConn('online'));
-window.addEventListener('offline', () => renderConn('offline'));
 
 // ---------- Navigation ----------
 function buildMenu() {
   let html = ''; let section = '';
   for (const [name, [, title, perm, icon, sec]] of Object.entries(ROUTES)) {
-    if (!sec || (perm && !Auth.can(perm))) continue;
+    if (perm && !Auth.can(perm)) continue;
     if (sec !== section) { section = sec; html += `<div class="nav-section">${esc(sec)}</div>`; }
-    html += `<a class="nav-link" href="#/${name}" data-route="${name}"><i class="bi bi-${icon}"></i>${esc(title)}</a>`;
+    html += `<a class="nav-link" href="#/${name}" data-route="${name}"><i class="bi bi-${icon}"></i><span>${esc(title)}</span></a>`;
   }
   $('.nav-menu').html(html);
   const u = Auth.user();
   $('#user-name').text(u.name);
   $('#user-role').text(Auth.ROLES[u.role] || u.role);
   $('#user-avatar').text(UI.initials(u.name));
-  $('#brand-name').text(getSettings().business.name || CONFIG.APP_NAME);
-  $('#bottom-nav [data-route="pos"]').toggleClass('d-none', !Auth.can('sale.create'));
+  $('#brand-name').text(getSettings().company.name || CONFIG.APP_NAME);
+  $('#bottom-nav [data-route="sales"]').toggleClass('d-none', !Auth.can('sale'));
+  $('#bottom-nav [data-route="shifts"]').toggleClass('d-none', !Auth.can('shift'));
 }
 
 async function route() {
   if (!Auth.user()) return;
-  if (checkExpiry()) return;
   const token = ++routeToken;
   const parts = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/').map(decodeURIComponent);
   const name = ROUTES[parts[0]] ? parts[0] : 'dashboard';
@@ -120,63 +110,55 @@ async function route() {
   bootstrap.Offcanvas.getInstance('#menu-offcanvas')?.hide();
   $('.nav-menu .nav-link, #bottom-nav a').removeClass('active');
   $(`.nav-menu [data-route="${name}"], #bottom-nav [data-route="${name}"]`).addClass('active');
-  $('body').toggleClass('focus-mode', FOCUS_ROUTES.has(name));
   $('#topbar-title').text(title);
+  // Each route renders into its own host element. If a slower, older route finishes after a newer one has
+  // started, it writes into a host that is no longer on the page, so it cannot overwrite the current screen.
   const $c = $('#content').off();
-  if (perm && !Auth.can(perm)) { $c.html(UI.emptyState('You do not have permission to open this page.', 'shield-lock')); return; }
-  $c.html(UI.spinner());
+  const host = document.createElement('div');
+  host.className = 'route-host';
+  $c[0].replaceChildren(host);
+  if (perm && !Auth.can(perm)) { host.innerHTML = UI.emptyState('You do not have permission to open this page.', 'shield-lock'); return; }
+  host.innerHTML = UI.spinner();
   try {
     const mod = (await loader()).default;
     if (token !== routeToken) return;
     currentModule = mod;
     window.scrollTo(0, 0);
-    $c.removeClass('page-enter');
-    await mod.render($c[0], { route: name, params: parts.slice(1), setTitle: (t) => $('#topbar-title').text(t) });
-    if (token === routeToken) { void $c[0].offsetWidth; $c.addClass('page-enter'); }
+    await mod.render(host, { route: name, params: parts.slice(1), setTitle: (t) => $('#topbar-title').text(t) });
+    if (token === routeToken) { void host.offsetWidth; host.classList.add('page-enter'); }
   } catch (e) {
     console.error(e);
-    if (token === routeToken) $c.html(UI.errorState(e));
+    if (token === routeToken) host.innerHTML = UI.errorState(e);
   }
 }
 
 // ---------- Auth gate ----------
 async function startApp() {
-  await Catalog.load();
   buildMenu();
   showView('app');
-  renderConn(navigator.onLine ? 'online' : 'offline');
-  clearInterval(expiryTimer);
-  expiryTimer = setInterval(checkExpiry, 60000);
   if (navigator.storage?.persist) navigator.storage.persisted().then((p) => { if (!p) navigator.storage.persist().catch(() => {}); });
   route();
 }
 
-async function doLogout(forced = false, reason = '') {
-  if (!forced && !await UI.confirmDialog('Log out of this device? Your POS data stays on this device, but signing in again requires an internet connection.', { okLabel: 'Log out', okClass: 'btn-danger' })) return;
-  clearInterval(expiryTimer);
+async function doLogout() {
+  if (!await UI.confirmDialog('Sign out of this device? Your data stays saved on this device.', { okLabel: 'Sign out', okClass: 'btn-danger' })) return;
   try { currentModule?.destroy?.(); } catch { /* ignore */ }
   currentModule = null;
   Auth.logout();
   $('#content').empty();
-  showLogin(reason);
+  await showLogin();
 }
 
-// Sessions are valid until expiresAt (set by the server); after that an online sign-in is required.
-let expiryTimer = null;
-function checkExpiry() {
-  if (!Auth.sessionExpired()) return false;
-  UI.toast('Your session has expired. Please sign in again.', 'warning', 6000);
-  doLogout(true, 'Your session has expired. Connect to the internet and sign in again.');
-  return true;
-}
-
-function showLogin(reason = '') {
+async function showLogin(notice = '') {
+  if (!(await Auth.hasUsers())) return showSetup();
   showView('login');
-  renderConn(navigator.onLine ? 'online' : 'offline');
-  const notices = [];
-  if (reason) notices.push(esc(reason));
-  $('#login-notice').toggleClass('d-none', !notices.length).html(notices.join('<br>'));
+  $('#login-notice').toggleClass('d-none', !notice).text(notice);
   setTimeout(() => $('#login-username').trigger('focus'), 50);
+}
+
+function showSetup() {
+  showView('setup');
+  setTimeout(() => $('#setup-name').trigger('focus'), 50);
 }
 
 $('#login-form').on('submit', async (e) => {
@@ -192,26 +174,53 @@ $('#login-form').on('submit', async (e) => {
     $('.auth-card').removeClass('shake'); void $('.auth-card')[0].offsetWidth; $('.auth-card').addClass('shake');
   } finally { $btn.prop('disabled', false).html('<span>Sign in</span><i class="bi bi-arrow-right"></i>'); }
 });
+
+// First run: create the owner account, then sign in.
+$('#setup-form').on('submit', async (e) => {
+  e.preventDefault();
+  const name = $('#setup-name').val().trim();
+  const username = $('#setup-username').val().trim();
+  const pw = $('#setup-password').val();
+  const pw2 = $('#setup-password2').val();
+  const $err = $('#setup-error').addClass('d-none');
+  if (!name) return $err.text('Enter the owner name.').removeClass('d-none');
+  if (pw !== pw2) return $err.text('The two passwords do not match.').removeClass('d-none');
+  const $btn = $('#setup-btn').prop('disabled', true);
+  try {
+    await Auth.createUser({ name, username, password: pw, role: 'owner' });
+    await Auth.login(username, pw);
+    await startApp();
+  } catch (err) {
+    $err.text(err.message || String(err)).removeClass('d-none');
+  } finally { $btn.prop('disabled', false); }
+});
+
 $('#toggle-pw').on('click', () => {
   const $i = $('#login-password'); const show = $i.attr('type') === 'password';
   $i.attr('type', show ? 'text' : 'password');
   $('#toggle-pw i').attr('class', show ? 'bi bi-eye-slash' : 'bi bi-eye');
 });
-$('#logout-btn').on('click', () => doLogout(false));
+$('#logout-btn').on('click', doLogout);
 $('#install-btn').on('click', promptInstall);
 window.addEventListener('hashchange', route);
-document.addEventListener('settings:changed', () => { applyTheme(); if (Auth.user()) $('#brand-name').text(getSettings().business.name || CONFIG.APP_NAME); });
+document.addEventListener('settings:changed', () => { applyTheme(); if (Auth.user()) $('#brand-name').text(getSettings().company.name || CONFIG.APP_NAME); });
 document.addEventListener('auth:changed', () => { if (Auth.user()) buildMenu(); });
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
+window.addEventListener('online', () => $('#conn-badge').attr('class', 'badge rounded-pill conn-online').html('<i class="bi bi-wifi"></i> <span>Online</span>'));
+window.addEventListener('offline', () => $('#conn-badge').attr('class', 'badge rounded-pill conn-offline').html('<i class="bi bi-wifi-off"></i> <span>Offline</span>'));
 
 // ---------- Boot ----------
 (async function boot() {
   applyTheme();
   registerSW();
   if (!window.jQuery || !window.bootstrap) return fatal('Required libraries failed to load. Connect to the internet once so the app can be cached for offline use.');
+  if (!navigator.onLine) $('#conn-badge').attr('class', 'badge rounded-pill conn-offline').html('<i class="bi bi-wifi-off"></i> <span>Offline</span>');
   try { await openDB(); } catch (e) { return fatal('Could not open the local database: ' + (e.message || e)); }
-  const { user, reason } = Auth.restoreSession();
-  if (user) {
-    try { await startApp(); } catch (e) { console.error(e); fatal(e.message || String(e)); }
-  } else showLogin(reason);
+  try {
+    const user = await Auth.restoreSession();
+    if (user) await startApp();
+    else await showLogin();
+  } catch (e) { console.error(e); fatal(e.message || String(e)); }
 })();
+
+export { doLogout, route };

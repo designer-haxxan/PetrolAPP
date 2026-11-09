@@ -1,151 +1,212 @@
-// Customers & suppliers: list, create/edit, ledger/statement, payments.
+// Parties: customers (udhaar), suppliers and OMCs, employees, and investors.
+// Each party has a statement, quick actions (receive, pay, salary, advance, profit) and, for investors, a profit-share view.
+import { getAll, get, write } from '../db/idb.js';
 import * as UI from '../core/ui.js';
-import { esc, today, monthStart, debounce } from '../core/utils.js';
-import { balText, dateFilter, bindDateFilter, ledgerTable, pager } from '../core/views.js';
+import { esc, uuid, nowISO, today, fmtDate, toCSV, downloadFile } from '../core/utils.js';
+import { fmt, money, parseAmount, rnd, balanceText } from '../core/money.js';
+import { loadBooks, partyLedger, incomeStatement } from '../services/finance.js';
+import { postVoucher } from '../services/posting.js';
+import { dateFilter, bindDateFilter, refLink } from '../core/views.js';
 import * as Auth from '../services/auth.js';
-import * as Catalog from '../services/catalog.js';
-import * as Posting from '../services/posting.js';
-import { printHTML } from '../printer/printer.js';
-import { getSettings } from '../core/settings.js';
-import { storageKey } from '../config.js';
 
 const $ = window.jQuery;
-const LABEL = { customers: ['Customer', 'Customers', 'Receivable'], suppliers: ['Supplier', 'Suppliers', 'Payable'] };
-const canEdit = (kind) => Auth.can(kind === 'customers' ? 'party.edit' : 'purchase.manage');
 
-export async function editParty(kind, party = null) {
-  const [one] = LABEL[kind];
-  const p = party || {};
-  return UI.formModal({
-    title: party ? `Edit ${one.toLowerCase()}` : `New ${one.toLowerCase()}`,
-    body: `<div class="row g-2">
-      <div class="col-12"><label class="form-label">Name *</label><input name="name" class="form-control" required maxlength="120" value="${esc(p.name)}"></div>
-      <div class="col-6"><label class="form-label">Phone</label><input name="phone" type="tel" class="form-control" value="${esc(p.phone)}"></div>
-      <div class="col-6"><label class="form-label">Email</label><input name="email" type="email" class="form-control" value="${esc(p.email)}"></div>
-      <div class="col-12"><label class="form-label">Address</label><input name="address" class="form-control" value="${esc(p.address)}"></div>
-      <div class="col-6"><label class="form-label">Opening ${LABEL[kind][2].toLowerCase()}</label><input name="openingBalance" class="form-control" inputmode="decimal" value="${p.openingBalance || ''}" placeholder="0"><div class="form-text">Use a negative amount for an advance.</div></div>
-      <div class="col-6"><label class="form-label">As of date</label><input name="openingDate" type="date" class="form-control" value="${esc(p.openingDate || today())}"></div>
-      <div class="col-12"><label class="form-label">Note</label><textarea name="note" class="form-control" rows="2">${esc(p.note)}</textarea></div>
-      ${party ? `<div class="col-12"><div class="form-check form-switch"><input class="form-check-input" type="checkbox" name="active" id="pa-active" ${p.active ? 'checked' : ''}><label class="form-check-label" for="pa-active">Active</label></div></div>` : ''}
-    </div>`,
-    onSubmit: (v) => Posting.saveParty(kind, { ...v, id: party?.id, active: party ? v.active : true }),
-  });
-}
-
-// Picker returning a party, null (none) or undefined (cancelled).
-export async function partyPicker(kind, { noneLabel = null } = {}) {
-  const bal = await Posting.allBalances();
-  const r = await UI.pick({
-    title: `Select ${LABEL[kind][0].toLowerCase()}`, noneLabel,
-    placeholder: 'Search name or phone…',
-    addNew: canEdit(kind) ? { label: `New ${LABEL[kind][0].toLowerCase()}`, create: () => editParty(kind) } : null,
-    search: async (q) => Catalog.searchParties(kind, q).map((p) => {
-      const b = bal.get(Posting.partyAccount(kind, p.id))?.balance || 0;
-      return { id: p.id, title: p.name, subtitle: p.phone || p.email || '', right: b ? balText(b, kind === 'customers').replace(/&amp;/g, '&') : '', value: p };
-    }),
-  });
-  if (r === undefined || r === null) return r;
-  return r.value || r; // created parties are returned directly
-}
-
-async function renderList(el, kind) {
-  const [one, many, balLabel] = LABEL[kind];
-  const $el = $(el);
-  $el.html(UI.pageHeader(many, canEdit(kind) ? `<button class="btn btn-primary btn-sm btn-add"><i class="bi bi-plus-lg"></i> Add</button>` : '') + `
-    <div class="filters"><input type="search" class="form-control flex-grow-2 q" placeholder="Search ${many.toLowerCase()}…">
-      <select class="form-select f-status"><option value="active">Active</option><option value="balance">With balance</option><option value="inactive">Inactive</option><option value="all">All</option></select></div>
-    <div class="small text-body-secondary mb-2 summary"></div>
-    <div class="list-card list"></div>`);
-  const bal = await Posting.allBalances();
-  const debitNormal = kind === 'customers';
-  const draw = () => {
-    const q = $el.find('.q').val().toLowerCase();
-    const f = $el.find('.f-status').val();
-    const list = Catalog.allParties(kind).filter((p) => {
-      const b = bal.get(Posting.partyAccount(kind, p.id))?.balance || 0;
-      if (f === 'active' && !p.active) return false;
-      if (f === 'inactive' && p.active) return false;
-      if (f === 'balance' && Math.abs(b) < 0.005) return false;
-      return !q || `${p.name} ${p.phone} ${p.email}`.toLowerCase().includes(q);
-    }).sort((a, b) => a.name.localeCompare(b.name));
-    const total = list.reduce((s, p) => s + (bal.get(Posting.partyAccount(kind, p.id))?.balance || 0), 0);
-    $el.find('.summary').html(`${list.length} ${many.toLowerCase()} · Total ${balLabel.toLowerCase()}: <b>${balText(total, debitNormal)}</b>`);
-    pager($el.find('.list'), list, (p) => {
-      const b = bal.get(Posting.partyAccount(kind, p.id))?.balance || 0;
-      return `<a class="list-row" href="#/${kind}/${encodeURIComponent(p.id)}">
-        ${UI.avatar(p.name, 'round')}
-        <div class="main"><div class="title">${esc(p.name)} ${p.active ? '' : '<span class="badge text-bg-secondary">Inactive</span>'}</div><div class="sub">${esc(p.phone || p.email || '—')}</div></div>
-        <div class="end"><div class="fw-semibold money ${Math.abs(b) > 0.005 ? '' : 'text-body-secondary'}">${balText(b, debitNormal)}</div></div></a>`;
-    }, 50, UI.emptyState(`No ${many.toLowerCase()} found`, 'people', canEdit(kind) ? `<button class="btn btn-primary btn-sm mt-3 btn-add">Add ${one.toLowerCase()}</button>` : ''));
-  };
-  draw();
-  $el.on('input', '.q', debounce(draw, 150));
-  $el.on('change', '.f-status', draw);
-  $el.on('click', '.btn-add', async () => { const p = await editParty(kind); if (p) location.hash = `#/${kind}/${p.id}`; });
-}
-
-async function renderDetail(el, kind, id) {
-  const [one, many, balLabel] = LABEL[kind];
-  const $el = $(el).off();
-  const p = Catalog.party(kind, id);
-  if (!p) { $el.html(UI.pageHeader(one, '', `#/${kind}`) + UI.emptyState(`${one} not found`, 'person-x')); return; }
-  const acc = Posting.partyAccount(kind, id);
-  const debitNormal = kind === 'customers';
-  let from = monthStart(); let to = today();
-  const payType = kind === 'customers' ? 'receipt' : 'payment';
-  const canPay = Auth.can(payType === 'receipt' ? 'voucher.create' : 'account.manage');
-  $el.html(UI.pageHeader(p.name, `
-      ${canEdit(kind) ? `<button class="btn btn-light btn-sm btn-edit" title="Edit"><i class="bi bi-pencil"></i></button>` : ''}
-      ${Auth.can('party.delete') ? `<button class="btn btn-light btn-sm btn-del" title="Delete"><i class="bi bi-trash"></i></button>` : ''}`, `#/${kind}`) + `
-    <div class="card stat-card mb-3"><div class="card-body d-flex flex-wrap align-items-center gap-3">
-      <div class="flex-grow-1"><div class="stat-label">${balLabel} balance</div><div class="stat-value money bal"></div>
-        <div class="small text-body-secondary">${esc([p.phone, p.email, p.address].filter(Boolean).join(' · ') || 'No contact details')}</div></div>
-      <div class="d-flex gap-2 flex-wrap">
-        ${canPay ? `<button class="btn btn-success btn-pay"><i class="bi bi-cash-coin me-1"></i>${kind === 'customers' ? 'Receive payment' : 'Make payment'}</button>` : ''}
-        ${kind === 'customers' && Auth.can('sale.create') ? `<button class="btn btn-outline-primary btn-sell"><i class="bi bi-cart-plus me-1"></i>New sale</button>` : ''}
-        <button class="btn btn-outline-secondary btn-print"><i class="bi bi-printer me-1"></i>Statement</button>
-      </div></div></div>
-    ${p.active ? '' : '<div class="alert alert-secondary py-2">This account is inactive.</div>'}
-    <h2 class="h6">Ledger</h2>
-    ${dateFilter(from, to)}
-    <div class="card"><div class="card-body p-0 ledger"></div></div>`);
-  let led;
-  const load = async () => {
-    const total = await Posting.accountBalance(acc);
-    $el.find('.bal').html(balText(total, debitNormal));
-    led = await Posting.ledger(acc, from, to);
-    $el.find('.ledger').html(ledgerTable(led, { debitNormal }));
-  };
-  await load();
-  bindDateFilter($el, (f, t) => { from = f; to = t; load(); });
-  $el.on('click', '.btn-edit', async () => { if (await editParty(kind, Catalog.party(kind, id))) renderDetail(el, kind, id); });
-  $el.on('click', '.btn-del', async () => {
-    if (!await UI.confirmDialog(`Delete ${p.name}? If there are transactions, the ${one.toLowerCase()} will be deactivated instead.`, { okLabel: 'Delete', okClass: 'btn-danger' })) return;
-    try { const r = await Posting.deleteParty(kind, id); UI.toast(r === 'deleted' ? `${one} deleted` : `${one} deactivated (has transactions)`); location.hash = `#/${kind}`; } catch (e) { UI.toastError(e); }
-  });
-  $el.on('click', '.btn-pay', async () => {
-    const { newVoucher } = await import('./vouchers.js');
-    if (await newVoucher({ type: payType, counterAccountId: acc })) load();
-  });
-  $el.on('click', '.btn-sell', () => {
-    const key = storageKey('draft.sale');
-    localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key) || '{}'), mode: 'sale', partyId: id, partyName: p.name }));
-    location.hash = '#/pos';
-  });
-  $el.on('click', '.btn-print', () => {
-    const b = getSettings().business;
-    printHTML(`<div class="print-report"><h2>${esc(b.name)}</h2><div>${esc(one)} statement: <b>${esc(p.name)}</b> ${esc(p.phone || '')}</div>
-      <div>Period: ${esc(from)} to ${esc(to)}</div><br>${ledgerTable(led, { debitNormal })}</div>`, { page: 'A4' });
-  });
-}
-
-export default {
-  async render(el, { route, params, setTitle }) {
-    const kind = route;
-    if (params[0]) {
-      await renderDetail(el, kind, params[0]);
-      setTitle(LABEL[kind][0]);
-    } else await renderList(el, kind);
+const KINDS = {
+  customer: {
+    title: 'Customers (udhaar)', one: 'customer', icon: 'person-lines-fill', tint: 'tint-amber', perm: 'sale',
+    balance: 'Receivable (owes us)', action: { label: 'Receive payment', type: 'receipt' },
+    fields: [['name', 'Name', 'text', true], ['phone', 'Phone', 'text'], ['cnic', 'CNIC / NTN', 'text'], ['address', 'Address', 'text'], ['creditLimit', 'Credit limit (Rs)', 'number']],
+  },
+  supplier: {
+    title: 'Suppliers & OMCs', one: 'supplier', icon: 'building', tint: 'tint-indigo', perm: 'purchase',
+    balance: 'Payable (we owe)', action: { label: 'Pay supplier', type: 'pay_supplier' },
+    fields: [['name', 'Company / supplier name', 'text', true], ['phone', 'Phone', 'text'], ['address', 'Address', 'text'], ['ntn', 'NTN / STRN', 'text'], ['contact', 'Contact person', 'text']],
+  },
+  employee: {
+    title: 'Employees', one: 'employee', icon: 'person-badge', tint: 'tint-green', perm: 'master',
+    balance: 'Advance outstanding', action: { label: 'Pay salary', type: 'salary', second: { label: 'Give advance', type: 'advance' } },
+    fields: [['name', 'Full name', 'text', true], ['designation', 'Designation', 'text'], ['phone', 'Phone', 'text'], ['cnic', 'CNIC', 'text'], ['salary', 'Monthly salary (Rs)', 'number'], ['joinDate', 'Joining date', 'date']],
+  },
+  investor: {
+    title: 'Investors', one: 'investor', icon: 'piggy-bank', tint: 'tint-violet', perm: 'accounts',
+    balance: 'Capital balance (credit)', action: { label: 'Record profit paid', type: 'profit_share', second: { label: 'Capital received', type: 'capital' } },
+    fields: [['name', 'Investor name', 'text', true], ['phone', 'Phone', 'text'], ['cnic', 'CNIC', 'text'], ['sharePct', 'Profit share (%)', 'number'], ['notes', 'Notes', 'text']],
   },
 };
 
+const ROUTE = { customer: 'customers', supplier: 'suppliers', employee: 'employees', investor: 'investors' };
+const KIND_OF_ROUTE = { customers: 'customer', suppliers: 'supplier', employees: 'employee', investors: 'investor' };
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
+const initials = (n) => String(n || '?').trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+
+// Balance shown in lists and statements. Customers and employees: positive = owed to us.
+// Suppliers: positive = we owe. Investors: positive = capital still in the business.
+function balanceFor(kind, books, id) {
+  if (kind === 'employee') return books.entries.reduce((s, e) => (e.partyId === id && e.accountId === 'emp_adv' ? rnd(s + e.debit - e.credit) : s), 0);
+  const net = partyLedger(books, id).net;
+  return kind === 'customer' ? net : -net;
+}
+
+function subtitle(kind, p) {
+  if (kind === 'investor') return `${p.phone ? esc(p.phone) + ' · ' : ''}${Number(p.sharePct || 0)}% profit share`;
+  if (kind === 'employee') return [p.designation, p.phone].filter(Boolean).map(esc).join(' · ');
+  return esc(p.phone || p.address || '');
+}
+
+async function render(el, ctx) {
+  const kind = KIND_OF_ROUTE[ctx.route];
+  if (ctx.params[0]) return renderStatement(el, kind, ctx.params[0]);
+  el.innerHTML = UI.spinner('Loading…');
+  const [parties, books] = await Promise.all([getAll('parties'), loadBooks()]);
+  const cfg = KINDS[kind];
+  const rows = parties.filter((p) => p.kind === kind).sort((a, b) => a.name.localeCompare(b.name))
+    .map((p) => ({ p, bal: balanceFor(kind, books, p.id) }));
+  const total = rnd(rows.reduce((s, r) => s + r.bal, 0));
+  el.innerHTML = `<div class="page-header d-flex align-items-center gap-2 mb-3 flex-wrap">
+      <h1 class="h5 mb-0 flex-grow-1">${esc(cfg.title)}</h1>
+      <button class="btn btn-primary btn-sm" data-act="new" ${Auth.can(cfg.perm) ? '' : 'disabled'}><i class="bi bi-plus-lg me-1"></i>Add ${esc(cfg.one)}</button></div>
+    <div class="row g-3 mb-3">
+      <div class="col-md-4"><div class="kpi" style="--tint:var(--brand)"><div class="kpi-label">${esc(cfg.balance)}</div><div class="kpi-value">${money(Math.abs(total))}</div><div class="kpi-sub">${rows.length} ${esc(cfg.title.toLowerCase())}</div></div></div>
+      <div class="col-md-8"><div class="input-group"><span class="input-group-text"><i class="bi bi-search"></i></span><input class="form-control" id="q" placeholder="Search by name or phone"></div></div>
+    </div>
+    <div class="list-card">${rows.length ? rows.map((r, i) => `<button class="list-row" data-act="open" data-id="${esc(r.p.id)}" data-q="${esc((r.p.name + ' ' + (r.p.phone || '')).toLowerCase())}" style="animation:rise .45s var(--ease) both;animation-delay:${Math.min(i, 14) * 40}ms">
+        <span class="avatar ${cfg.tint}">${esc(initials(r.p.name))}</span>
+        <span class="flex-grow-1 min-w-0"><span class="d-block fw-semibold text-truncate">${esc(r.p.name)}</span><span class="d-block small text-body-secondary text-truncate">${subtitle(kind, r.p)}</span></span>
+        <span class="text-end">${balanceText(r.bal, kind === 'supplier' || kind === 'investor' ? 'cr' : 'dr')}</span></button>`).join('')
+      : UI.emptyState(`No ${cfg.title.toLowerCase()} yet`, cfg.icon, Auth.can(cfg.perm) ? '<button class="btn btn-primary mt-3" data-act="new">Add</button>' : '')}</div>`;
+
+  const $el = $(el).off();
+  const again = () => render(el, ctx);
+  $el.on('input', '#q', function () {
+    const q = this.value.trim().toLowerCase();
+    $el.find('[data-q]').each((_, r) => $(r).toggle(!q || r.dataset.q.includes(q)));
+  });
+  $el.on('click', '[data-act="open"]', function () { location.hash = `#/${ROUTE[kind]}/${encodeURIComponent(this.dataset.id)}`; });
+  $el.on('click', '[data-act="new"]', async () => { if (await openForm(kind, null)) again(); });
+}
+
+async function openForm(kind, party) {
+  const cfg = KINDS[kind];
+  const body = `<div class="row g-3">${cfg.fields.map(([key, label, type, req]) => `<div class="${key === 'address' || key === 'notes' ? 'col-12' : 'col-md-6'}">
+      <label class="form-label small">${esc(label)}</label>
+      <input type="${type}" ${type === 'number' ? 'step="0.0001" min="0" class="form-control money-input"' : 'class="form-control"'} name="${key}" value="${esc(party?.[key] ?? '')}" ${req ? 'required' : ''}></div>`).join('')}</div>`;
+  return UI.formModal({
+    title: party ? `Edit ${cfg.one}` : `Add ${cfg.one}`, body, submitLabel: party ? 'Update' : 'Save',
+    onSubmit: async (f) => {
+      if (!f.name?.trim()) throw new Error('Enter the name.');
+      const row = { ...(party || { id: uuid(), kind, createdAt: nowISO() }), updatedAt: nowISO(), active: party ? party.active !== false : true };
+      for (const [key, , type] of cfg.fields) row[key] = type === 'number' ? (parseAmount(f[key]) ?? 0) : String(f[key] ?? '').trim();
+      if (kind === 'investor' && (row.sharePct < 0 || row.sharePct > 100)) throw new Error('Profit share must be between 0 and 100.');
+      row.nameLc = row.name.toLowerCase();
+      await write(['parties'], (t) => t.put('parties', row));
+      UI.toast(party ? 'Saved' : `${cap(cfg.one)} added`);
+      return true;
+    },
+  });
+}
+
+// ---------------------------------------------------------------- statement of one party
+async function renderStatement(el, kind, id) {
+  const cfg = KINDS[kind];
+  el.innerHTML = UI.spinner();
+  const party = await get('parties', id);
+  if (!party || party.kind !== kind) { el.innerHTML = UI.emptyState('Not found.', 'question-circle'); return; }
+  const state = { from: '2000-01-01', to: today(), rows: [] };
+  const $el = $(el).off();
+
+  const draw = async () => {
+    const books = await loadBooks();
+    const led = partyLedger(books, id, state.from, state.to);
+    const bal = balanceFor(kind, books, id);
+    let running = 0;
+    state.rows = led.rows.map((e) => { running = rnd(running + e.debit - e.credit); return { ...e, running }; });
+    el.querySelector('#stmt-body').innerHTML = `
+      <div class="row g-3 mb-3">
+        <div class="col-md-4"><div class="kpi" style="--tint:var(--brand)"><div class="kpi-label">${esc(cfg.balance)}</div><div class="kpi-value">${money(Math.abs(bal))}</div></div></div>
+        <div class="col-md-4"><div class="kpi" style="--tint:#16a34a"><div class="kpi-label">Debits (period)</div><div class="kpi-value">${money(led.dr)}</div></div></div>
+        <div class="col-md-4"><div class="kpi" style="--tint:#dc2626"><div class="kpi-label">Credits (period)</div><div class="kpi-value">${money(led.cr)}</div></div></div>
+      </div>
+      ${kind === 'investor' ? investorBlock(books, party, state) : ''}
+      <div class="list-card"><div class="p-3 pb-2 d-flex align-items-center justify-content-between flex-wrap gap-2"><div class="fw-semibold">Statement</div>
+        <div class="d-flex gap-2 no-print"><button class="btn btn-sm btn-outline-secondary" data-act="csv"><i class="bi bi-filetype-csv me-1"></i>CSV</button><button class="btn btn-sm btn-outline-secondary" data-act="print"><i class="bi bi-printer me-1"></i>Print</button></div></div>
+      <div class="table-responsive"><table class="table table-sm table-hover align-middle mb-0 table-report"><thead><tr><th>Date</th><th>Ref</th><th>Account</th><th>Details</th><th class="num">Debit</th><th class="num">Credit</th><th class="num">Running</th></tr></thead>
+      <tbody>${state.rows.length ? state.rows.map((e) => `<tr><td class="text-nowrap">${fmtDate(e.date)}</td><td class="text-nowrap">${refLink(e.refType, e.refId, e.refNo || '')}</td><td class="small">${esc(e.accountName)}</td><td class="small">${esc(e.memo || '')}</td>
+        <td class="num">${e.debit ? fmt(e.debit) : ''}</td><td class="num">${e.credit ? fmt(e.credit) : ''}</td><td class="num fw-semibold">${fmt(e.running)}</td></tr>`).join('') : '<tr><td colspan="7" class="text-center text-body-secondary py-4">No entries in this period</td></tr>'}</tbody></table></div></div>`;
+  };
+
+  const quick = cfg.action ? `<button class="btn btn-primary btn-sm" data-act="quick" data-type="${cfg.action.type}">${esc(cfg.action.label)}</button>`
+    + (cfg.action.second ? `<button class="btn btn-outline-primary btn-sm" data-act="quick" data-type="${cfg.action.second.type}">${esc(cfg.action.second.label)}</button>` : '') : '';
+  el.innerHTML = `<div class="page-header d-flex align-items-center gap-2 mb-3 flex-wrap no-print">
+      <a class="btn btn-light btn-sm" href="#/${ROUTE[kind]}" aria-label="Back"><i class="bi bi-arrow-left"></i></a>
+      <div class="flex-grow-1 min-w-0"><h1 class="h5 mb-0 text-truncate">${esc(party.name)}</h1><div class="small text-body-secondary">${cap(cfg.one)}${party.phone ? ' · ' + esc(party.phone) : ''}</div></div>
+      ${Auth.can(cfg.perm) ? quick : ''}
+      <button class="btn btn-outline-secondary btn-sm" data-act="edit"><i class="bi bi-pencil me-1"></i>Edit</button></div>
+    ${dateFilter(state.from, state.to)}
+    <div id="stmt-body"></div>`;
+  await draw();
+  bindDateFilter($el, async (f, t) => { state.from = f; state.to = t; await draw(); });
+  $el.on('click', '[data-act="edit"]', async () => { if (await openForm(kind, party)) renderStatement(el, kind, id); });
+  $el.on('click', '[data-act="print"]', () => window.print());
+  $el.on('click', '[data-act="csv"]', () => {
+    const rows = state.rows.map((e) => [e.date, e.refNo || '', e.accountName, e.memo || '', e.debit, e.credit, e.running]);
+    downloadFile(`${party.name}-statement.csv`, toCSV([['Date', 'Ref', 'Account', 'Details', 'Debit', 'Credit', 'Running'], ...rows]), 'text/csv');
+  });
+  $el.on('click', '[data-act="quick"]', async function () {
+    if (await quickAction(this.dataset.type, party)) { UI.toast('Posted'); draw(); }
+  });
+}
+
+async function quickAction(type, party) {
+  const books = await loadBooks();
+  const bal = balanceFor(party.kind, books, party.id);
+  const payAccounts = (await getAll('accounts')).filter((a) => ['cash', 'bank', 'wallet'].includes(a.kind) && a.active !== false);
+  const label = { receipt: 'Receive payment', pay_supplier: 'Pay supplier', salary: 'Pay salary', advance: 'Give advance', profit_share: 'Record profit paid', capital: 'Capital received' }[type];
+  const suggested = { salary: party.salary, profit_share: Math.max(0, profitDue(books, party)), receipt: Math.max(0, bal), pay_supplier: Math.max(0, bal) }[type];
+  const hint = {
+    receipt: `Current udhaar: ${money(Math.max(0, bal))}.`,
+    pay_supplier: `Current payable: ${money(Math.max(0, bal))}.`,
+    profit_share: `Profit due this year so far: ${money(Math.max(0, profitDue(books, party)))}.`,
+  }[type] || '';
+  return UI.formModal({
+    title: `${label} · ${party.name}`, submitLabel: 'Save & post',
+    body: `<div class="row g-3">
+      <div class="col-md-6"><label class="form-label small">Amount (Rs)</label><input type="number" step="0.0001" min="0" class="form-control money-input" name="amount" value="${suggested ? Number(suggested).toFixed(4) : ''}" required></div>
+      <div class="col-md-6"><label class="form-label small">${type === 'receipt' || type === 'advance' || type === 'capital' ? 'Into account' : 'Paid from'}</label><select class="form-select" name="accountId">${payAccounts.map((a) => `<option value="${esc(a.id)}">${esc(a.name)}</option>`).join('')}</select></div>
+      <div class="col-12"><label class="form-label small">Date</label><input type="date" class="form-control" name="date" value="${today()}"></div>
+      <div class="col-12"><label class="form-label small">Reference / note</label><input class="form-control" name="memo" placeholder="Cheque no., receipt no., note"></div>
+      ${hint ? `<div class="col-12 small text-body-secondary">${esc(hint)}</div>` : ''}
+    </div>`,
+    onSubmit: async (f) => {
+      const amount = parseAmount(f.amount);
+      if (!(amount > 0)) throw new Error('Enter an amount greater than zero.');
+      await postVoucher({ type, date: f.date || today(), accountId: f.accountId, partyId: party.id, amount, memo: f.memo || label });
+      return true;
+    },
+  });
+}
+
+// Profit share: the investor's share of net profit from the start of the year to today, less profit already paid.
+function profitDue(books, party) {
+  const pl = incomeStatement(books, today().slice(0, 4) + '-01-01', today());
+  const share = rnd(pl.netProfit * (Number(party.sharePct) || 0) / 100);
+  const paid = books.entries.reduce((s, e) => (e.partyId === party.id && e.accountId === 'profit_dist' ? rnd(s + e.debit - e.credit) : s), 0);
+  return rnd(share - paid);
+}
+
+function investorBlock(books, party, state) {
+  const pl = incomeStatement(books, state.from, state.to);
+  const share = rnd(pl.netProfit * (Number(party.sharePct) || 0) / 100);
+  const sumOf = (acc, sign) => books.entries.reduce((s, e) => (e.partyId === party.id && e.accountId === acc ? rnd(s + sign * (e.credit - e.debit)) : s), 0);
+  return `<div class="card p-3 mb-3"><div class="fw-semibold mb-2">Investor summary · ${esc(party.name)}</div>
+    <div class="row g-3">
+      <div class="col-md-3 col-6"><div class="small text-body-secondary">Capital contributed</div><div class="fw-bold">${money(sumOf('capital', 1))}</div></div>
+      <div class="col-md-3 col-6"><div class="small text-body-secondary">Drawings</div><div class="fw-bold">${money(sumOf('drawings', -1))}</div></div>
+      <div class="col-md-3 col-6"><div class="small text-body-secondary">Profit share (${esc(String(party.sharePct || 0))}%) for period</div><div class="fw-bold">${money(share)}</div><div class="small text-body-secondary">Company net profit ${money(pl.netProfit)}</div></div>
+      <div class="col-md-3 col-6"><div class="small text-body-secondary">Profit paid to date</div><div class="fw-bold">${money(sumOf('profit_dist', -1))}</div></div>
+    </div></div>`;
+}
+
+export default {
+  render,
+  destroy() {},
+};
