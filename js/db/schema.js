@@ -6,13 +6,12 @@ export const DB_VERSION = 1;
 
 // Every store is part of the backup. Ledger rows (entries) are immutable; corrections are reversals.
 export const STORE_NAMES = [
-  'meta', 'users', 'accounts', 'entries', 'vouchers', 'parties', 'products', 'priceHistory',
+  'meta', 'accounts', 'entries', 'vouchers', 'parties', 'products', 'priceHistory',
   'tanks', 'pumps', 'nozzles', 'shifts', 'dips', 'sales', 'purchases', 'stockMoves', 'fixedAssets', 'auditLog',
 ];
 
 const STORES = {
   meta: { keyPath: 'key', indexes: {} },
-  users: { indexes: { username: ['usernameLc', true] } },
   accounts: { indexes: { group: 'group', kind: 'kind', code: ['code', true] } },
   entries: {
     indexes: {

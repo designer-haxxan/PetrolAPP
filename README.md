@@ -25,7 +25,7 @@ Stack: HTML5 · ES modules · jQuery · Bootstrap 5 · Bootstrap Icons · Indexe
 | **Vouchers** | Receipts, supplier payments, expenses, salaries, advances, capital, drawings, profit paid, bank deposits, transfers, loans, customer advances, and manual journal vouchers that must balance. |
 | **Accounts** | Chart of accounts with balances. Add accounts. Ledger for any account. |
 | **Reports** | Trial balance, profit and loss, balance sheet, cash and bank book, day book, receivable and payable aging (FIFO: 0–30, 31–60, 61–90, over 90 days), sales by product, shift cash, tank reconciliation, investor shares. Print and CSV. |
-| **Users** | Owner, Manager, Accountant, Attendant/Cashier. Passwords hashed with PBKDF2-SHA-256. |
+| **Sign-in and roles** | Accounts come from eposwala. Sign in with the same username and password as the eposwala apps. The server's role (admin, manager, accountant, cashier) sets what each user can open. Only the phone bound to the account can sign in. |
 | **Backup & restore** | One JSON file with every record, the settings and a SHA-256 checksum. A restore asks for confirmation and checks the checksum first. |
 
 Amounts, litres and rates are stored and calculated to **4 decimal places**. The display can be set to 2, 3 or 4 decimals in Settings. Values are rounded to 4 decimals after each multiplication or division, so totals do not drift.
@@ -58,14 +58,16 @@ Serve the folder over HTTP. The service worker needs `http://localhost` or HTTPS
 python -m http.server 8765 --bind 127.0.0.1
 ```
 
-Open `http://localhost:8765`. On first run, create the owner account. The chart of accounts and ten sample products (fuel and lubricants) are seeded automatically. Then:
+Open `http://localhost:8765`. Sign-in uses the eposwala login API, which only accepts browser requests from `https://petrolapp.eposwala.com`. Sign-in therefore works only when the app is served from that host (see `CNAME`, currently `petrolapp.eposwala.com`). On other hosts you will see "Could not reach the login server". Offline use is allowed until the session's `expiresAt`, then the app asks for an online sign-in again.
+
+The chart of accounts and ten sample products (fuel and lubricants) are seeded automatically. Then:
 
 1. **Products & rates**: set today's rate for each fuel and lubricant.
 2. **Pumps & nozzles**: add the dispensers and nozzles. Add tanks under **Tanks & dips**, with opening stock.
 3. **Investors, suppliers, customers, employees**: add the parties.
 4. Open a shift, close it, and check the cash reconciliation.
 
-Deploy: any static host over HTTPS (GitHub Pages, Netlify, or your own server).
+Deploy: static hosting over HTTPS on the host in `CNAME` (`petrolapp.eposwala.com`). Any other host needs the API to allow its origin.
 
 **Shipping updates:** the service worker caches the app shell. When you change any file, bump `VERSION` in `service-worker.js` (for example `petropump-v2.0.1`). Otherwise phones keep serving the old files.
 
@@ -84,7 +86,7 @@ js/core/ui.js              Modals, toasts, confirm dialogs, skeletons, count-up
 js/core/views.js           Ledger tables, date filters, tank gauge, badges
 js/db/schema.js            IndexedDB stores, indexes, chart of accounts, seed products
 js/db/idb.js               Promise wrapper with atomic multi-store transactions
-js/services/auth.js        Local users, PBKDF2, roles and permissions
+js/services/auth.js        eposwala sign-in, device binding, session expiry, roles and permissions
 js/services/ledger.js      Document numbering, journal (balanced transactions), reversals
 js/services/stock.js       Moving-average stock, tank book, reversals
 js/services/posting.js     Sales, purchases, shifts, dips, vouchers, assets, depreciation, rates
@@ -96,4 +98,5 @@ js/modules/*.js            One file per screen
 ## Limits and next steps
 
 - **Not included yet:** thermal (ESC/POS) receipt printing, Urdu receipts, bank reconciliation, cheque register, payroll tax and EOBI/PESSI deductions, withholding tax, e-invoicing and FBR POS integration, multi-device sync, barcode scanning, and an automated test suite. Each can be added on top of the current ledger.
+- **User management is not in the app.** Create, disable and reset accounts in eposwala.
 - **Existing SaleAPP data is not migrated.** The new app uses its own database (`petropump_erp`), so it cannot touch the old one. Use the old app's backup if you need that data.

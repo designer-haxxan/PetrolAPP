@@ -1,7 +1,7 @@
 /* Service worker: precaches the app shell and CDN libraries so PetroPump ERP loads fully offline.
    Bump VERSION whenever any cached file changes; clients update automatically. */
 const APP_ID = 'petropump';
-const VERSION = `${APP_ID}-v2.0.0`;
+const VERSION = `${APP_ID}-v2.0.1`;
 const isOwnCache = (key) => key.startsWith(`${APP_ID}-`);
 const SHELL = [
   './', './index.html', './manifest.json', './css/app.css',
@@ -11,7 +11,7 @@ const SHELL = [
   './js/db/idb.js', './js/db/schema.js',
   './js/services/auth.js', './js/services/finance.js', './js/services/ledger.js', './js/services/openings.js',
   './js/services/posting.js', './js/services/stock.js',
-  './js/modules/accounts.js', './js/modules/admin.js', './js/modules/assets.js', './js/modules/backup.js',
+  './js/modules/accounts.js', './js/modules/assets.js', './js/modules/backup.js',
   './js/modules/dashboard.js', './js/modules/machines.js', './js/modules/parties.js', './js/modules/products.js',
   './js/modules/purchases.js', './js/modules/reports.js', './js/modules/sales.js', './js/modules/settings.js',
   './js/modules/shifts.js', './js/modules/stock.js', './js/modules/tanks.js', './js/modules/vouchers.js',

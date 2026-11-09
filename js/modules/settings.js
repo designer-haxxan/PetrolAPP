@@ -42,15 +42,6 @@ function render(el) {
         </div>
         ${canEdit ? '<button class="btn btn-primary mt-3" type="submit">Save rules</button>' : '<div class="small text-body-secondary mt-3">Only the owner or a manager can change these settings.</div>'}
       </form></div>
-      <div class="col-lg-6"><form class="card p-4" id="f-pw">
-        <div class="fw-bold mb-3"><i class="bi bi-key me-1"></i>Change my password</div>
-        <div class="row g-3">
-          <div class="col-12"><label class="form-label small">Current password</label><input type="password" class="form-control" name="old" autocomplete="current-password" required></div>
-          <div class="col-md-6"><label class="form-label small">New password</label><input type="password" class="form-control" name="pw" autocomplete="new-password" required></div>
-          <div class="col-md-6"><label class="form-label small">Repeat new password</label><input type="password" class="form-control" name="pw2" autocomplete="new-password" required></div>
-        </div>
-        <button class="btn btn-outline-primary mt-3" type="submit">Change password</button>
-      </form></div>
       <div class="col-lg-6"><div class="card p-4 h-100 small">
         <div class="fw-bold mb-3"><i class="bi bi-info-circle me-1"></i>About this app</div>
         <div>Version ${esc(CONFIG.APP_VERSION)} · Local database <code>${esc(DB_NAME)}</code></div>
@@ -73,16 +64,6 @@ function render(el) {
     applyTheme();
     UI.toast('Settings saved');
     render(el);
-  });
-  $el.on('submit', '#f-pw', async (e) => {
-    e.preventDefault();
-    const f = Object.fromEntries(new FormData(e.currentTarget).entries());
-    if (f.pw !== f.pw2) return UI.toast('The new passwords do not match', 'warning');
-    try {
-      await Auth.changeOwnPassword(f.old, f.pw);
-      e.currentTarget.reset();
-      UI.toast('Password changed');
-    } catch (err) { UI.toastError(err); }
   });
 }
 

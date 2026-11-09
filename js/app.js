@@ -1,4 +1,4 @@
-// Application bootstrap: service worker, database, first-run setup, login gate, navigation and routing.
+// Application bootstrap: service worker, database, sign-in (eposwala accounts), session expiry, navigation and routing.
 import { CONFIG } from './config.js';
 import { applyTheme, getSettings } from './core/settings.js';
 import * as UI from './core/ui.js';
@@ -27,7 +27,6 @@ const ROUTES = {
   vouchers: [M('vouchers'), 'Vouchers & Payments', 'voucher', 'cash-coin', 'Accounts'],
   accounts: [M('accounts'), 'Chart of Accounts & Ledger', 'accounts', 'journal-bookmark', 'Accounts'],
   reports: [M('reports'), 'Reports', 'reports', 'bar-chart-line', 'Accounts'],
-  users: [M('admin'), 'Users', 'users', 'person-gear', 'Administration'],
   backup: [M('backup'), 'Backup & Restore', 'backup', 'cloud-arrow-down', 'Administration'],
   settings: [M('settings'), 'Settings', 'settings', 'gear', 'Administration'],
 };
@@ -35,10 +34,10 @@ const ROUTES = {
 let currentModule = null;
 let routeToken = 0;
 let deferredInstall = null;
+let expiryTimer = null;
 
 function showView(name) {
   $('#splash').addClass('d-none');
-  $('#view-setup').toggleClass('d-none', name !== 'setup');
   $('#view-login').toggleClass('d-none', name !== 'login');
   $('#view-app').toggleClass('d-none', name !== 'app');
 }
@@ -101,6 +100,7 @@ function buildMenu() {
 
 async function route() {
   if (!Auth.user()) return;
+  if (checkExpiry()) return;
   const token = ++routeToken;
   const parts = (location.hash.replace(/^#\/?/, '') || 'dashboard').split('/').map(decodeURIComponent);
   const name = ROUTES[parts[0]] ? parts[0] : 'dashboard';
@@ -132,39 +132,46 @@ async function route() {
   }
 }
 
-// ---------- Auth gate ----------
+// ---------- Sign-in gate and session ----------
 async function startApp() {
   buildMenu();
   showView('app');
+  clearInterval(expiryTimer);
+  expiryTimer = setInterval(checkExpiry, 60000);
   if (navigator.storage?.persist) navigator.storage.persisted().then((p) => { if (!p) navigator.storage.persist().catch(() => {}); });
   route();
 }
 
-async function doLogout() {
-  if (!await UI.confirmDialog('Sign out of this device? Your data stays saved on this device.', { okLabel: 'Sign out', okClass: 'btn-danger' })) return;
+// After the server's expiresAt the app needs an online sign-in again. Offline use stays allowed until then.
+function checkExpiry() {
+  if (!Auth.sessionExpired()) return false;
+  UI.toast('Your session has expired. Please sign in again.', 'warning', 6000);
+  doLogout(true, Auth.expiryMessage());
+  return true;
+}
+
+async function doLogout(forced = false, notice = '') {
+  if (!forced && !await UI.confirmDialog('Sign out of this device? Your data stays saved on this device, and signing in again needs an internet connection.', { okLabel: 'Sign out', okClass: 'btn-danger' })) return;
+  clearInterval(expiryTimer);
   try { currentModule?.destroy?.(); } catch { /* ignore */ }
   currentModule = null;
   Auth.logout();
   $('#content').empty();
-  await showLogin();
+  showLogin(notice);
 }
 
-async function showLogin(notice = '') {
-  if (!(await Auth.hasUsers())) return showSetup();
+function showLogin(notice = '') {
   showView('login');
   $('#login-notice').toggleClass('d-none', !notice).text(notice);
+  $('#login-error').addClass('d-none');
   setTimeout(() => $('#login-username').trigger('focus'), 50);
-}
-
-function showSetup() {
-  showView('setup');
-  setTimeout(() => $('#setup-name').trigger('focus'), 50);
 }
 
 $('#login-form').on('submit', async (e) => {
   e.preventDefault();
   const $btn = $('#login-btn').prop('disabled', true).html('<span class="spinner-border spinner-border-sm"></span><span>Signing in…</span>');
   $('#login-error').addClass('d-none');
+  $('#login-notice').addClass('d-none');
   try {
     await Auth.login($('#login-username').val(), $('#login-password').val());
     $('#login-password').val('');
@@ -175,36 +182,15 @@ $('#login-form').on('submit', async (e) => {
   } finally { $btn.prop('disabled', false).html('<span>Sign in</span><i class="bi bi-arrow-right"></i>'); }
 });
 
-// First run: create the owner account, then sign in.
-$('#setup-form').on('submit', async (e) => {
-  e.preventDefault();
-  const name = $('#setup-name').val().trim();
-  const username = $('#setup-username').val().trim();
-  const pw = $('#setup-password').val();
-  const pw2 = $('#setup-password2').val();
-  const $err = $('#setup-error').addClass('d-none');
-  if (!name) return $err.text('Enter the owner name.').removeClass('d-none');
-  if (pw !== pw2) return $err.text('The two passwords do not match.').removeClass('d-none');
-  const $btn = $('#setup-btn').prop('disabled', true);
-  try {
-    await Auth.createUser({ name, username, password: pw, role: 'owner' });
-    await Auth.login(username, pw);
-    await startApp();
-  } catch (err) {
-    $err.text(err.message || String(err)).removeClass('d-none');
-  } finally { $btn.prop('disabled', false); }
-});
-
 $('#toggle-pw').on('click', () => {
   const $i = $('#login-password'); const show = $i.attr('type') === 'password';
   $i.attr('type', show ? 'text' : 'password');
   $('#toggle-pw i').attr('class', show ? 'bi bi-eye-slash' : 'bi bi-eye');
 });
-$('#logout-btn').on('click', doLogout);
+$('#logout-btn').on('click', () => doLogout(false));
 $('#install-btn').on('click', promptInstall);
 window.addEventListener('hashchange', route);
 document.addEventListener('settings:changed', () => { applyTheme(); if (Auth.user()) $('#brand-name').text(getSettings().company.name || CONFIG.APP_NAME); });
-document.addEventListener('auth:changed', () => { if (Auth.user()) buildMenu(); });
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 window.addEventListener('online', () => $('#conn-badge').attr('class', 'badge rounded-pill conn-online').html('<i class="bi bi-wifi"></i> <span>Online</span>'));
 window.addEventListener('offline', () => $('#conn-badge').attr('class', 'badge rounded-pill conn-offline').html('<i class="bi bi-wifi-off"></i> <span>Offline</span>'));
@@ -217,9 +203,9 @@ window.addEventListener('offline', () => $('#conn-badge').attr('class', 'badge r
   if (!navigator.onLine) $('#conn-badge').attr('class', 'badge rounded-pill conn-offline').html('<i class="bi bi-wifi-off"></i> <span>Offline</span>');
   try { await openDB(); } catch (e) { return fatal('Could not open the local database: ' + (e.message || e)); }
   try {
-    const user = await Auth.restoreSession();
-    if (user) await startApp();
-    else await showLogin();
+    if (Auth.restoreSession()) await startApp();
+    else if (Auth.wasExpiredOnRestore()) showLogin(Auth.expiryMessage());
+    else showLogin(navigator.onLine ? '' : 'Connect to the internet to sign in.');
   } catch (e) { console.error(e); fatal(e.message || String(e)); }
 })();
 

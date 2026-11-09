@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="description" content="Petrol pump ERP: nozzle-wise shifts, tanks and dips, fuel purchases, udhaar, vouchers, investors, receivables, payables and full accounts for Pakistani petrol pumps.">
   <meta name="theme-color" content="#0b5cad">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net data:; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; font-src 'self' https://cdn.jsdelivr.net data:; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net https://eposwala.com; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; object-src 'none'">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -26,41 +26,6 @@
     <div class="splash-name mt-3">PetroPump ERP</div>
     <div class="splash-bar" role="status"><span class="visually-hidden">Loading</span></div>
     <div id="splash-error" class="text-danger small mt-3 px-4 text-center"></div>
-  </div>
-
-  <!-- First run: create the owner account -->
-  <div id="view-setup" class="d-none">
-    <div class="auth">
-      <div class="auth-bg" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
-      <div class="auth-inner">
-        <section class="auth-hero">
-          <div class="brand-row">
-            <div class="brand-mark"><i class="bi bi-fuel-pump-fill"></i></div>
-            <div><div class="name">PetroPump ERP</div><div class="tag">Pakistan petrol pump software</div></div>
-          </div>
-          <h1>Set up your <span class="grad">pump office.</span></h1>
-          <p class="lead-sm">Create the owner account. You can add managers, accountants and attendants later. Everything works offline and is stored on this device.</p>
-          <ul class="feature-chips">
-            <li><i class="bi bi-speedometer2"></i>Nozzle-wise shifts</li>
-            <li><i class="bi bi-droplet-half"></i>Tank dips</li>
-            <li><i class="bi bi-journal-check"></i>Full accounts</li>
-            <li><i class="bi bi-people"></i>Udhaar &amp; investors</li>
-          </ul>
-        </section>
-        <section class="auth-card" aria-labelledby="setup-title">
-          <h2 id="setup-title">Create owner account</h2>
-          <div class="sub">This is the only step needed before you start.</div>
-          <form id="setup-form" novalidate>
-            <div class="field"><input type="text" id="setup-name" placeholder=" " autocomplete="name" required><i class="bi bi-person lead-icon"></i><label for="setup-name">Owner full name</label></div>
-            <div class="field"><input type="text" id="setup-username" placeholder=" " autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required><i class="bi bi-at lead-icon"></i><label for="setup-username">Username (letters, numbers)</label></div>
-            <div class="field"><input type="password" id="setup-password" placeholder=" " autocomplete="new-password" required><i class="bi bi-lock lead-icon"></i><label for="setup-password">Password (min 6 characters)</label></div>
-            <div class="field"><input type="password" id="setup-password2" placeholder=" " autocomplete="new-password" required><i class="bi bi-lock-fill lead-icon"></i><label for="setup-password2">Repeat password</label></div>
-            <div id="setup-error" class="alert alert-danger py-2 small d-none"></div>
-            <button type="submit" class="btn btn-grad btn-login w-100" id="setup-btn"><span>Create account &amp; start</span><i class="bi bi-arrow-right"></i></button>
-          </form>
-        </section>
-      </div>
-    </div>
   </div>
 
   <!-- Sign in -->
@@ -101,7 +66,7 @@
         </section>
         <section class="auth-card" aria-labelledby="login-title">
           <h2 id="login-title">Welcome back</h2>
-          <div class="sub">Sign in to your pump office</div>
+          <div class="sub">Sign in with your eposwala account</div>
           <div id="login-notice" class="alert alert-info small d-none"></div>
           <form id="login-form" novalidate>
             <div class="field">
@@ -118,7 +83,7 @@
             <div id="login-error" class="alert alert-danger py-2 small d-none"></div>
             <button type="submit" class="btn btn-grad btn-login w-100" id="login-btn"><span>Sign in</span><i class="bi bi-arrow-right"></i></button>
           </form>
-          <div class="text-center small mt-3 auth-note">Works offline. Your data stays on this device; use Backup to keep a copy.</div>
+          <div class="text-center small mt-3 auth-note">Internet is needed to sign in. After that the app works offline until your session expires. Your data stays on this device; use Backup to keep a copy.</div>
         </section>
       </div>
     </div>
